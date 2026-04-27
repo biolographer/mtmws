@@ -203,13 +203,17 @@ public:
         int32_t audioIn = AudioIn1();
 
         if (currentMode == RECORD) {
-            buffer[writeInd] = audioIn;
-            writeInd++;
-            if (writeInd >= bufSize) writeInd = 0;
+            // ONLY write to memory on the downsampled tick
+            if (dsTick == 0) {
+                buffer[writeInd] = audioIn;
+                writeInd++;
+                if (writeInd >= bufSize) writeInd = 0;
+            }
             
+            // Pass the high-res 48kHz audio straight to the speaker so monitoring sounds clean
             AudioOut1(audioIn);
             AudioOut2(audioIn);
-            LedOn(0, true); // Top LED = Recording
+            LedOn(0, true); 
         } 
         else if (currentMode == SLICE) {
             LedOn(0, false);
@@ -220,13 +224,17 @@ public:
                 int32_t oldVal = buffer[playPos1];
                 int32_t newVal = buffer[newPlayPos1];
                 out1 = (oldVal * xfadeInd1 + newVal * (xfadeLen - xfadeInd1)) / xfadeLen;
-                playPos1 = (playPos1 + 1) % bufSize;
-                newPlayPos1 = (newPlayPos1 + 1) % bufSize;
-                xfadeInd1--;
-                if (xfadeInd1 == 0) playPos1 = newPlayPos1;
+                
+                // ONLY advance the playhead on the downsampled tick
+                if (dsTick == 0) {
+                    playPos1 = (playPos1 + 1) % bufSize;
+                    newPlayPos1 = (newPlayPos1 + 1) % bufSize;
+                    xfadeInd1--;
+                    if (xfadeInd1 == 0) playPos1 = newPlayPos1;
+                }
             } else {
                 out1 = buffer[playPos1];
-                playPos1 = (playPos1 + 1) % bufSize;
+                if (dsTick == 0) playPos1 = (playPos1 + 1) % bufSize;
             }
             AudioOut1(out1);
 
@@ -236,20 +244,23 @@ public:
                 int32_t oldVal = buffer[playPos2];
                 int32_t newVal = buffer[newPlayPos2];
                 out2 = (oldVal * xfadeInd2 + newVal * (xfadeLen - xfadeInd2)) / xfadeLen;
-                playPos2 = (playPos2 + 1) % bufSize;
-                newPlayPos2 = (newPlayPos2 + 1) % bufSize;
-                xfadeInd2--;
-                if (xfadeInd2 == 0) playPos2 = newPlayPos2;
+                
+                if (dsTick == 0) {
+                    playPos2 = (playPos2 + 1) % bufSize;
+                    newPlayPos2 = (newPlayPos2 + 1) % bufSize;
+                    xfadeInd2--;
+                    if (xfadeInd2 == 0) playPos2 = newPlayPos2;
+                }
             } else {
                 out2 = buffer[playPos2];
-                playPos2 = (playPos2 + 1) % bufSize;
+                if (dsTick == 0) playPos2 = (playPos2 + 1) % bufSize;
             }
             AudioOut2(out2);
         }
         
         // UI Indicators
-        LedOn(1, reverseCh2); // LED 2 turns on when CH2 is in reverse mode
-        CVOut1((currentStep * 4095) / totalSlices); // Stepped CV ramp of the current bar position
+        LedOn(1, reverseCh2); 
+        CVOut1((currentStep * 4095) / totalSlices);
     }
 };
 
