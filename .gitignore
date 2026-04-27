@@ -40,9 +40,8 @@
 *.app
 
 # Build directories
-build/
-Build/
-build-*/
+01_Jux/build/*
+!01_Jux/build/*.uf2
 
 # CMake generated files
 CMakeFiles/
@@ -67,3 +66,5 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+pico-sdk
