@@ -42,6 +42,8 @@
 # Build directories
 01_Jux/build/*
 !01_Jux/build/*.uf2
+02_GBS/build/*
+!02_GBD/build/*.uf2
 
 # CMake generated files
 CMakeFiles/
