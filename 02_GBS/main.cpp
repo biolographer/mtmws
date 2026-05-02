@@ -68,6 +68,10 @@ public:
     // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch
     uint8_t yKnobMode = 0; 
     
+    // Knob Takeover State
+    int lastYKnobPos = 0;
+    bool yKnobActive = true;
+    
     // Latched Y-Knob Parameters
     float latchedGate = 1.0f;
     int latchedRatchets = 1;
@@ -98,22 +102,35 @@ public:
 
         int yVal = KnobVal(Knob::Y); // 0 to 4095
 
-        // --- UPDATE LATCHED MEMORY ---
-        // Only updates the specific variable tied to the currently active mode
-        if (yKnobMode == 0) {
-            latchedGate = (yVal / 4095.0f);
-            if (latchedGate < 0.01f) latchedGate = 0.01f;
+        // Check if user has moved the knob enough to "wake it up" for this mode.
+        // A threshold of 64 prevents ADC noise from waking it up accidentally.
+        if (!yKnobActive) {
+            if (yVal > lastYKnobPos + 64 || yVal < lastYKnobPos - 64) {
+                yKnobActive = true;
+            }
         }
-        else if (yKnobMode == 1) {
-            latchedRatchets = 1 + (yVal * 4) / 4096; 
-        }
-        else if (yKnobMode == 2) {
-            latchedJitterAmt = yVal;
-        }
-        else if (yKnobMode == 3) {
-            if (yVal < 1365) latchedPitchState = 0; 
-            else if (yVal > 2730) latchedPitchState = 2;
-            else latchedPitchState = 1; 
+
+        // Only update memory if the knob has been actively nudged by the user
+        if (yKnobActive) {
+            lastYKnobPos = yVal; // Keep tracking the position
+
+            // --- UPDATE LATCHED MEMORY ---
+            // Only updates the specific variable tied to the currently active mode
+            if (yKnobMode == 0) {
+                latchedGate = (yVal / 4095.0f);
+                if (latchedGate < 0.01f) latchedGate = 0.01f;
+            }
+            else if (yKnobMode == 1) {
+                latchedRatchets = 1 + (yVal * 4) / 4096; 
+            }
+            else if (yKnobMode == 2) {
+                latchedJitterAmt = yVal;
+            }
+            else if (yKnobMode == 3) {
+                if (yVal < 1365) latchedPitchState = 0; 
+                else if (yVal > 2730) latchedPitchState = 2;
+                else latchedPitchState = 1; 
+            }
         }
 
         // ---------------------------------------------------------
@@ -143,6 +160,9 @@ public:
                 if (switchHoldDownTimer < 24000) {
                     yKnobMode++;
                     if (yKnobMode > 3) yKnobMode = 0;
+                    
+                    yKnobActive = false;             // Put the knob to sleep in the new mode
+                    lastYKnobPos = KnobVal(Knob::Y); // Take a snapshot of its physical position
                 }
             }
             // Reset timers when switch is not down
