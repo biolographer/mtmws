@@ -67,7 +67,6 @@ public:
     // Y-Knob Multi-Mode State
     // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch
     uint8_t yKnobMode = 0; 
-    uint32_t modeDisplayTimer = 0; // Keeps LEDs on briefly to show the mode
     
     // Latched Y-Knob Parameters
     float latchedGate = 1.0f;
@@ -144,7 +143,6 @@ public:
                 if (switchHoldDownTimer < 24000) {
                     yKnobMode++;
                     if (yKnobMode > 3) yKnobMode = 0;
-                    modeDisplayTimer = 48000; // Show LEDs for 1 second
                 }
             }
             // Reset timers when switch is not down
@@ -164,9 +162,6 @@ public:
             playPos2 = frozenWriteInd;
         }
         lastSwitch = s;
-
-        // Decrement Mode Display Timer
-        if (modeDisplayTimer > 0) modeDisplayTimer--;
 
         // ---------------------------------------------------------
         // 3. PINGABLE CLOCK & X-GRID CALCULATION
@@ -263,10 +258,8 @@ public:
             }
             AudioOut1(audioIn);
             AudioOut2(audioIn);
-            LedOn(0, true); 
         } 
         else if (currentMode == SLICE) {
-            LedOn(0, false);
             
             // --- APPLY LATCHED PRE-CALCULATIONS ---
             uint32_t allowedPlaySamples = currentSliceLength * latchedGate;
@@ -357,19 +350,23 @@ public:
         // 6. UI INDICATORS
         // ---------------------------------------------------------
         
-        // If the mode was just changed, hijack the LEDs to show the mode number
-        if (modeDisplayTimer > 0) {
-            LedOn(0, yKnobMode >= 0); // Always on
-            LedOn(1, yKnobMode >= 1);
-            LedOn(2, yKnobMode >= 2);
-            LedOn(3, yKnobMode >= 3);
-            LedOn(4, false);
-            LedOn(5, false);
+        // LED 0: Solid in Record Mode, Pulses with triggers in Slice Mode
+        if (currentMode == RECORD) {
+            LedOn(0, true);
         } else {
-            // Normal LED operation
-            LedOn(1, reverseCh2); 
-            CVOut1((currentStep * 4095) / totalSlices);
+            LedOn(0, sliceTimer < 1000); // ~20ms flash at the start of each slice
         }
+
+        // LED 1: Reverse Status
+        LedOn(1, reverseCh2); 
+
+        // LEDs 2-5: Always show the current Y-Knob Mode
+        LedOn(2, yKnobMode == 0); // Gate
+        LedOn(3, yKnobMode == 1); // Ratchet
+        LedOn(4, yKnobMode == 2); // Jitter
+        LedOn(5, yKnobMode == 3); // Pitch
+
+        CVOut1((currentStep * 4095) / totalSlices);
     }
 };
 
