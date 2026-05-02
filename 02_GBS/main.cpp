@@ -57,15 +57,16 @@ public:
     Switch lastSwitch = Switch::Down;
 
     // CH2 Reverse State
-    uint32_t switchHoldDownTimer = 0;
-    bool switchHoldDownTriggered = false;
     bool reverseCh2 = false;
+
+    // Switch Down Gesture Tracking
+    uint32_t switchHoldDownTimer = 0;
+    bool reverseTriggered = false;
+    bool resetTriggered = false;
 
     // Y-Knob Multi-Mode State
     // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch
     uint8_t yKnobMode = 0; 
-    uint32_t switchHoldUpTimer = 0;
-    bool switchHoldUpTriggered = false;
     uint32_t modeDisplayTimer = 0; // Keeps LEDs on briefly to show the mode
 
     GranularSlicer()
@@ -96,30 +97,36 @@ public:
         // 2. STATE MANAGER & UI GESTURES
         // ---------------------------------------------------------
         
-        // DOWN HOLD: Toggle CH2 Reverse (0.5 seconds)
+        // DOWN Gestures: Short Tap, 0.5s Hold, 1.5s Hold
         if (s == Switch::Down) {
             switchHoldDownTimer++;
-            if (switchHoldDownTimer >= 24000 && !switchHoldDownTriggered) {
-                reverseCh2 = !reverseCh2; 
-                switchHoldDownTriggered = true;
-            }
-        } else {
-            switchHoldDownTimer = 0;
-            switchHoldDownTriggered = false;
-        }
 
-        // UP HOLD: Cycle Y-Knob Modes (1.5 seconds)
-        if (s == Switch::Up) {
-            switchHoldUpTimer++;
-            if (switchHoldUpTimer >= 72000 && !switchHoldUpTriggered) {
-                yKnobMode++;
-                if (yKnobMode > 3) yKnobMode = 0;
-                switchHoldUpTriggered = true;
-                modeDisplayTimer = 48000; // Show LEDs for 1 second
+            // 0.5s Hold (24000 samples) -> Toggle Reverse Mode
+            if (switchHoldDownTimer >= 24000 && !reverseTriggered) {
+                reverseCh2 = !reverseCh2; 
+                reverseTriggered = true;
+            }
+
+            // 1.5s Hold (72000 samples) -> Reset Sequence
+            if (switchHoldDownTimer >= 72000 && !resetTriggered) {
+                currentStep = 0;
+                sliceTimer = 0;
+                resetTriggered = true;
             }
         } else {
-            switchHoldUpTimer = 0;
-            switchHoldUpTriggered = false;
+            // RELEASE ACTION: Transitioning out of the DOWN state
+            if (lastSwitch == Switch::Down) {
+                // Short Tap check: Released before 0.5s
+                if (switchHoldDownTimer < 24000) {
+                    yKnobMode++;
+                    if (yKnobMode > 3) yKnobMode = 0;
+                    modeDisplayTimer = 48000; // Show LEDs for 1 second
+                }
+            }
+            // Reset timers when switch is not down
+            switchHoldDownTimer = 0;
+            reverseTriggered = false;
+            resetTriggered = false;
         }
 
         // Standard Switch Actions
@@ -131,10 +138,6 @@ public:
             frozenWriteInd = writeInd; 
             playPos1 = frozenWriteInd; 
             playPos2 = frozenWriteInd;
-        }
-        else if (s == Switch::Down && lastSwitch != Switch::Down) {
-            currentStep = 0;
-            sliceTimer = 0;
         }
         lastSwitch = s;
 
