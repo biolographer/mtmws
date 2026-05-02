@@ -68,6 +68,12 @@ public:
     // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch
     uint8_t yKnobMode = 0; 
     uint32_t modeDisplayTimer = 0; // Keeps LEDs on briefly to show the mode
+    
+    // Latched Y-Knob Parameters
+    float latchedGate = 1.0f;
+    int latchedRatchets = 1;
+    int latchedPitchState = 1; // 0 = half, 1 = normal, 2 = double
+    int latchedJitterAmt = 0;
 
     GranularSlicer()
     {
@@ -86,12 +92,30 @@ public:
         }
 
         // ---------------------------------------------------------
-        // 1. Read Knobs 
+        // 1. Read Knobs & Update Latched Memory
         // ---------------------------------------------------------
         int totalSlices = (KnobVal(Knob::X) * 64) / 4096;
         if (totalSlices < 1) totalSlices = 1;
 
         int yVal = KnobVal(Knob::Y); // 0 to 4095
+
+        // --- UPDATE LATCHED MEMORY ---
+        // Only updates the specific variable tied to the currently active mode
+        if (yKnobMode == 0) {
+            latchedGate = (yVal / 4095.0f);
+            if (latchedGate < 0.01f) latchedGate = 0.01f;
+        }
+        else if (yKnobMode == 1) {
+            latchedRatchets = 1 + (yVal * 4) / 4096; 
+        }
+        else if (yKnobMode == 2) {
+            latchedJitterAmt = yVal;
+        }
+        else if (yKnobMode == 3) {
+            if (yVal < 1365) latchedPitchState = 0; 
+            else if (yVal > 2730) latchedPitchState = 2;
+            else latchedPitchState = 1; 
+        }
 
         // ---------------------------------------------------------
         // 2. STATE MANAGER & UI GESTURES
@@ -203,9 +227,9 @@ public:
 
             // --- MODE 2: JITTER (Adds random offset to start point) ---
             uint32_t jitterOffset = 0;
-            if (yKnobMode == 2) {
+            if (latchedJitterAmt > 0) {
                 uint32_t maxJitter = currentSliceLength / 2;
-                jitterOffset = (rnd12() * yVal * maxJitter) / (4095 * 4095);
+                jitterOffset = (rnd12() * latchedJitterAmt * maxJitter) / (4095 * 4095);
             }
 
             newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % bufSize;
@@ -244,47 +268,33 @@ public:
         else if (currentMode == SLICE) {
             LedOn(0, false);
             
-            // --- MODE 0 & 1 & 3 PRE-CALCULATIONS ---
-            
-            // Gate Math
-            float gatePercent = 1.0f;
-            if (yKnobMode == 0) gatePercent = (yVal / 4095.0f);
-            if (gatePercent < 0.01f) gatePercent = 0.01f;
-            uint32_t allowedPlaySamples = currentSliceLength * gatePercent;
-
-            // Pitch Math (Advance speed)
-            int pitchAdvance = 1;
-            if (yKnobMode == 3) {
-                if (yVal < 1365) {
-                    pitchAdvance = 0; // Half speed (advances every other tick)
-                    pitchSubTick1++;
-                    if (pitchSubTick1 >= 2) { pitchAdvance = 1; pitchSubTick1 = 0; }
-                } 
-                else if (yVal > 2730) {
-                    pitchAdvance = 2; // Double speed (octave up)
-                }
-            }
-
-            // Ratchet Math
-            int ratchets = 1;
-            if (yKnobMode == 1) ratchets = 1 + (yVal * 4) / 4096; // 1, 2, 3, or 4
+            // --- APPLY LATCHED PRE-CALCULATIONS ---
+            uint32_t allowedPlaySamples = currentSliceLength * latchedGate;
+            int ratchets = latchedRatchets;
             uint32_t ratchetInterval = triggerInterval / ratchets;
+
+            int pitchAdvance = 1;
+            if (latchedPitchState == 0) {
+                pitchAdvance = 0; // Half speed (advances every other tick)
+                pitchSubTick1++;
+                if (pitchSubTick1 >= 2) { pitchAdvance = 1; pitchSubTick1 = 0; }
+            } else if (latchedPitchState == 2) {
+                pitchAdvance = 2; // Double speed (octave up)
+            }
 
 
             // --- CH1 DSP ---
             int32_t out1 = 0; 
 
-            // Mode 1: Ratchet Trigger Check
-            if (yKnobMode == 1) {
-                ratchetSubTimer1++;
-                if (ratchetSubTimer1 >= ratchetInterval && ratchets > 1) {
-                    ratchetSubTimer1 = 0;
-                    playPos1 = newPlayPos1; // Snap back to start of slice
-                    xfadeInd1 = xfadeLen;
-                }
+            // Ratchet Trigger Check (Always runs, relies on 'ratchets' value)
+            ratchetSubTimer1++;
+            if (ratchetSubTimer1 >= ratchetInterval && ratchets > 1) {
+                ratchetSubTimer1 = 0;
+                playPos1 = newPlayPos1; // Snap back to start of slice
+                xfadeInd1 = xfadeLen;
             }
 
-            // Mode 0: Gate Muting
+            // Gate Muting
             if (samplesPlayedInSlice1 < allowedPlaySamples) {
                 if (xfadeInd1 > 0) {
                     int32_t oldVal = buffer[playPos1];
@@ -311,13 +321,12 @@ public:
             // --- CH2 DSP (Identical but follows CH2 trackers) ---
             int32_t out2 = 0; 
             
-            if (yKnobMode == 1) {
-                ratchetSubTimer2++;
-                if (ratchetSubTimer2 >= ratchetInterval && ratchets > 1) {
-                    ratchetSubTimer2 = 0;
-                    playPos2 = newPlayPos2;
-                    xfadeInd2 = xfadeLen;
-                }
+            // Ratchet Trigger Check (Always runs, relies on 'ratchets' value)
+            ratchetSubTimer2++;
+            if (ratchetSubTimer2 >= ratchetInterval && ratchets > 1) {
+                ratchetSubTimer2 = 0;
+                playPos2 = newPlayPos2;
+                xfadeInd2 = xfadeLen;
             }
 
             if (samplesPlayedInSlice2 < allowedPlaySamples) {
