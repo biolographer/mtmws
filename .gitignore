@@ -70,3 +70,4 @@ Testing/
 .cache/
 
 pico-sdk
+.DS_Store
