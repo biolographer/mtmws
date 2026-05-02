@@ -156,7 +156,8 @@ public:
                 triggerNextSlice = true;
             }
         } else {
-            cycleLengthSamples = 96000; 
+            // Matches the internal timer to the total time it takes to fill the buffer
+            cycleLengthSamples = bufSize * DOWNSAMPLE_FACTOR;
         }
 
         uint32_t triggerInterval = cycleLengthSamples / totalSlices;
