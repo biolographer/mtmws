@@ -41,3 +41,9 @@
     - 11_goldfish card
     - Utility_pair (https://github.com/chrisgjohnson/Utility-Pair/)
     - RYK card (commercial, code not published)
+- Y knob?
+    - ratcheting: Instead of playing the slice once, Knob Y divides the current step into sub-triggers. 
+    - Granular Jitter (Spray): Introduces randomized micro-offsets to the start point of every slice.
+    - sample gating: Morphs the slice envelope from a Hard Square Gate (tracker style, clicky, robotic) to a Smooth Bell/Sine Window (ambient, SuperDirt style).
+    - Pitch shifting. Knob Y acts as a stepped pitch shifter, forcing the playhead to read the buffer at different speeds (locked to musical intervals).
+    - 
