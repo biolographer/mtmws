@@ -52,3 +52,4 @@
     - Stereo Spread / Panning: Randomly assigns each new grain a different position between the left and right outputs to create a wide, immersive spatial field.
     - "Bit-Crush" / Lo-Fi (Internal Decimation): Dynamically reduces the playback sample rate to introduce digital grit and harmonic aliasing artifacts.
 - does it slice to a bar? or does it just take the max, buffer length and slice that up?
+- knob takeover can be improved: Change value of param only if knob is close to its old value, prevents jumping of param
