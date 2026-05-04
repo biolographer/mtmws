@@ -47,11 +47,8 @@
     - sample gating: Morphs the slice envelope from a Hard Square Gate (tracker style, clicky, robotic) to a Smooth Bell/Sine Window (ambient, SuperDirt style).
     - Pitch shifting. Knob Y acts as a stepped pitch shifter, forcing the playhead to read the buffer at different speeds (locked to musical intervals).
     -     Grain Envelope / "Texture" (Windowing): Fades each grain in and out using a mathematical curve to replace harsh clicks with smooth, shaped volume contours.
-
-    Grain Density / "Spray" (Overlapping): Triggers multiple overlapping playheads simultaneously to transform single slices into a thick, ambient cloud of sound.
-
-    Scan / Position Modulation: Automatically advances the playback start point through the audio buffer to create evolving textures from a static recording.
-
-    Stereo Spread / Panning: Randomly assigns each new grain a different position between the left and right outputs to create a wide, immersive spatial field.
-
-    "Bit-Crush" / Lo-Fi (Internal Decimation): Dynamically reduces the playback sample rate to introduce digital grit and harmonic aliasing artifacts.
+    - Grain Density / "Spray" (Overlapping): Triggers multiple overlapping playheads simultaneously to transform single slices into a thick, ambient cloud of sound.
+    - Scan / Position Modulation: Automatically advances the playback start point through the audio buffer to create evolving textures from a static recording.
+    - Stereo Spread / Panning: Randomly assigns each new grain a different position between the left and right outputs to create a wide, immersive spatial field.
+    - "Bit-Crush" / Lo-Fi (Internal Decimation): Dynamically reduces the playback sample rate to introduce digital grit and harmonic aliasing artifacts.
+- does it slice to a bar? or does it just take the max, buffer length and slice that up?
