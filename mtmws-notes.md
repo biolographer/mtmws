@@ -53,4 +53,18 @@
     - "Bit-Crush" / Lo-Fi (Internal Decimation): Dynamically reduces the playback sample rate to introduce digital grit and harmonic aliasing artifacts.
     - [x] polymeteric Phase Window, Y drops beats from the channel 2 buffer
 - [x] slice to a bar? or does it just take the max, buffer length and slice that up?
-- knob takeover can be improved: Change value of param only if knob is close to its old value, prevents jumping of param
+- [x] knob takeover can be improved: Change value of param only if knob is close to its old value, prevents jumping of param
+- Modulation
+    - CV in 1 & 2
+        - Slice number (x knob)
+        - probability (main knob)
+    - Pulse in 2
+        - toggle reverse
+        - Freeze: stop writeInd from advancing in record mode
+        - toggle: turn off all effects
+    - Audio In 2
+        - Stereo
+        - Side-chaining: use its amplitude to modulate the volume of the slices
+    - CV out 2
+        - Grain Envelope Follower: You could output a 0–5V signal that tracks the amplitude of the current slices. If you’re using the latchedGateInt to shorten slices, the CV output would look like a rhythmic decay envelope. You could send this to a VCA later in your rack to tighten the sound even further.
+        - Mirror/Invert Sequence: If CVOut1 is playing the sequence for Channel 1, CVOut2 could play the sequence for Channel 2. This is especially effective when using the Phase Window, as the two CV streams would slowly drift apart visually on an oscilloscope.
