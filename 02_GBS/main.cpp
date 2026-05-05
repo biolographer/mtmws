@@ -197,7 +197,8 @@ public:
                 clockWasStopped = true;
             }
 
-            if (PulseInRisingEdge(1)) {
+            // [FIXED] Correctly monitoring Pulse 1 input pin
+            if (PulseIn1RisingEdge()) {
                 
                 // Hard sync to DAW downbeat when transport starts
                 if (clockWasStopped) {
@@ -285,7 +286,8 @@ public:
             uint32_t jitterOffset = 0;
             if (latchedJitterAmt > 0) {
                 uint32_t maxJitter = currentSliceLength / 2;
-                jitterOffset = (rnd12() * latchedJitterAmt * maxJitter) / (4095 * 4095);
+                // [FIXED] Force 64-bit integer math to prevent wraparound overflow
+                jitterOffset = ((uint64_t)rnd12() * latchedJitterAmt * maxJitter) / 16769025ULL;
             }
 
             // Both playheads locate their designated slice inside the physical master buffer
@@ -348,6 +350,8 @@ public:
             ratchetSubTimer1++;
             if (ratchetSubTimer1 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer1 = 0;
+                // [FIXED] Reset sample counter on ratchet to keep gate open
+                samplesPlayedInSlice1 = 0; 
                 playPos1 = newPlayPos1; 
                 xfadeInd1 = xfadeLen;
                 PulseOut1(true); // Re-trigger on ratchet
@@ -384,6 +388,8 @@ public:
             ratchetSubTimer2++;
             if (ratchetSubTimer2 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer2 = 0;
+                // [FIXED] Reset sample counter on ratchet to keep gate open
+                samplesPlayedInSlice2 = 0; 
                 playPos2 = newPlayPos2;
                 xfadeInd2 = xfadeLen;
                 PulseOut2(true); // Re-trigger on ratchet
@@ -419,7 +425,6 @@ public:
         // 6. UI INDICATORS
         // ---------------------------------------------------------
         
-
         LedOn(0, reverseCh2); 
         LedOn(1, yKnobMode == 5 || yKnobMode == 4);
         LedOn(2, yKnobMode == 0 || yKnobMode == 4); 
