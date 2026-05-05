@@ -14,8 +14,9 @@ public:
     static constexpr uint32_t bufSize = 96000; // 4 seconds at 24kHz (downsampled 48kHz)
     int16_t buffer[bufSize];
     
-    // Rhythmic Buffer Size
+    // Rhythmic Buffer Sizes
     uint32_t activeBufferLength = bufSize; 
+    uint32_t ch2ActiveBufferLength = bufSize;
 
     // Buffer Trackers
     uint32_t writeInd = 0;
@@ -56,6 +57,7 @@ public:
     // Turing Machine Sequencer
     uint8_t seq[64];
     uint8_t currentStep = 0;
+    uint8_t currentStep2 = 0; // Independent polymeter sequencer step
     
     // UI & State
     enum Mode { RECORD, SLICE };
@@ -71,20 +73,20 @@ public:
     bool resetTriggered = false;
 
     // Y-Knob Multi-Mode State
-    // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch, 4: Bar Length
-    uint8_t yKnobMode = 0; 
+    // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch, 4: Bar Length, 5: Phase Window
+    uint8_t yKnobMode = 4; 
     
     // True Catch-up Takeover State
     bool yKnobActive = true;
-    // Defaults: Gate=Full, Ratchet=1, Jitter=0, Pitch=Normal, BarLength=4 QN
-    int32_t latchedYKnobRaw[5] = {4095, 0, 0, 2048, 1536}; 
+    int32_t latchedYKnobRaw[6] = {4095, 0, 0, 2048, 1536, 0}; 
     
     // Latched Y-Knob Parameters
-    uint32_t latchedGateInt = 4096; // 1.0 multiplier mapped to 0-4096 for fast math
+    uint32_t latchedGateInt = 4096; 
     int latchedRatchets = 1;
     int latchedPitchState = 1; 
     int latchedJitterAmt = 0;
     int latchedBarLength = 4;
+    uint32_t latchedPhaseWindow = 0; // 0 = Full Length, 4095 = 1 Beat
 
     GranularSlicer()
     {
@@ -96,7 +98,6 @@ public:
     {
         Switch s = SwitchVal();
 
-        // Advance the master downsample clock
         dsTick++;
         if (dsTick >= DOWNSAMPLE_FACTOR) {
             dsTick = 0;
@@ -114,21 +115,17 @@ public:
         if (!yKnobActive) {
             int32_t targetVal = latchedYKnobRaw[yKnobMode];
             int32_t diff = yVal - targetVal;
-            
-            // If the physical knob is within ~2.5% of the stored value, take over
             if (diff > -100 && diff < 100) {
                 yKnobActive = true;
             }
         }
 
-        // Only update memory if the knob has caught up to the stored value
         if (yKnobActive) {
-            latchedYKnobRaw[yKnobMode] = yVal; // Update the raw storage
+            latchedYKnobRaw[yKnobMode] = yVal; 
 
-            // --- UPDATE LATCHED PARAMETERS ---
             if (yKnobMode == 0) {
-                latchedGateInt = yVal + 1; // Maps 0-4095 to 1-4096
-                if (latchedGateInt < 40) latchedGateInt = 40; // ~1% minimum gate
+                latchedGateInt = yVal + 1; 
+                if (latchedGateInt < 40) latchedGateInt = 40; 
             }
             else if (yKnobMode == 1) {
                 latchedRatchets = 1 + (yVal * 4) / 4096; 
@@ -144,6 +141,9 @@ public:
             else if (yKnobMode == 4) {
                 latchedBarLength = 1 + (yVal * 8) / 4096; // 1 to 8 Quarter Notes
             }
+            else if (yKnobMode == 5) {
+                latchedPhaseWindow = yVal; // 0 to 4095
+            }
         }
 
         // ---------------------------------------------------------
@@ -158,6 +158,7 @@ public:
             }
             if (switchHoldDownTimer >= 72000 && !resetTriggered) {
                 currentStep = 0;
+                currentStep2 = 0; // Reset polymeter phase
                 sliceTimer = 0;
                 resetTriggered = true;
             }
@@ -165,7 +166,7 @@ public:
             if (lastSwitch == Switch::Down) {
                 if (switchHoldDownTimer < 24000) {
                     yKnobMode++;
-                    if (yKnobMode > 4) yKnobMode = 0; // Wraps through 5 modes now
+                    if (yKnobMode > 5) yKnobMode = 0; 
                     yKnobActive = false; 
                 }
             }
@@ -198,31 +199,29 @@ public:
 
             if (PulseInRisingEdge(1)) {
                 
+                // Hard sync to DAW downbeat when transport starts
                 if (clockWasStopped) {
                     currentStep = 0;
+                    currentStep2 = 0; 
                     sliceTimer = 0;
                     writeInd = 0; 
                     smoothedPulseLength = samplesSinceLastClock; 
                     clockWasStopped = false;
                 }
 
-                // Smooth jitter from external analog clock signals
                 uint32_t currentPulseLength = samplesSinceLastClock;
                 smoothedPulseLength = (smoothedPulseLength * 3 + currentPulseLength) / 4;
                 samplesSinceLastClock = 0;
 
-                // 24 PPQN MATH: 24 pulses = 1 Quarter Note
                 uint32_t beatLengthSamples = smoothedPulseLength * 24;
                 uint32_t bufferSamplesPerBeat = beatLengthSamples / DOWNSAMPLE_FACTOR;
                 
-                // --- APPLY BAR LENGTH ---
+                // --- APPLY BAR LENGTH (Channel 1 Master) ---
                 uint32_t targetBufferSamples = latchedBarLength * bufferSamplesPerBeat;
 
-                // Check if the requested bar length physically fits in RAM
                 if (targetBufferSamples > 0 && targetBufferSamples <= bufSize) {
                     activeBufferLength = targetBufferSamples;
                 } 
-                // If it's too long, fall back to the maximum whole beats that DO fit
                 else if (targetBufferSamples > bufSize && bufferSamplesPerBeat <= bufSize) {
                     uint32_t maxBeats = bufSize / bufferSamplesPerBeat;
                     activeBufferLength = maxBeats * bufferSamplesPerBeat;
@@ -230,12 +229,23 @@ public:
                 else {
                     activeBufferLength = bufSize; 
                 }
+
+                // --- CH2 PHASE WINDOW CALCULATION ---
+                if (bufferSamplesPerBeat > 0 && activeBufferLength >= bufferSamplesPerBeat) {
+                    uint32_t currentTotalBeats = activeBufferLength / bufferSamplesPerBeat;
+                    if (currentTotalBeats < 1) currentTotalBeats = 1;
+                    
+                    uint32_t ch2Beats = 1 + (((4096 - latchedPhaseWindow) * (currentTotalBeats - 1)) >> 12);
+                    ch2ActiveBufferLength = ch2Beats * bufferSamplesPerBeat;
+                } else {
+                    ch2ActiveBufferLength = activeBufferLength;
+                }
             }
         } else {
             activeBufferLength = bufSize; 
+            ch2ActiveBufferLength = bufSize;
         }
 
-        // --- INDEPENDENT SLICING TIMER ---
         uint32_t triggerInterval = (activeBufferLength * DOWNSAMPLE_FACTOR) / totalSlices;
         if (triggerInterval == 0) triggerInterval = 1; 
 
@@ -253,7 +263,6 @@ public:
             int mainKnob = KnobVal(Knob::Main);
             currentSliceLength = activeBufferLength / totalSlices;
             
-            // TURING LOGIC
             if (mainKnob < 100) {
                 seq[currentStep] = currentStep % totalSlices; 
             } 
@@ -272,16 +281,30 @@ public:
                 }
             }
 
-            uint32_t targetSlice1 = seq[currentStep];
-            uint32_t targetSlice2 = reverseCh2 ? seq[(totalSlices - 1) - currentStep] : targetSlice1;
+            // Calculate how many slices CH2 actually plays based on its shortened buffer
+            uint32_t ch2TotalSlices = totalSlices; 
+            if (activeBufferLength > 0) {
+                ch2TotalSlices = (totalSlices * ch2ActiveBufferLength) / activeBufferLength;
+            }
+            if (ch2TotalSlices < 1) ch2TotalSlices = 1;
 
-            // --- MODE 2: JITTER (Adds random offset to start point) ---
+            uint32_t targetSlice1 = seq[currentStep];
+            
+            // Reverse reads backwards from the length of CH2's sequence loop
+            uint32_t targetSlice2;
+            if (reverseCh2) {
+                targetSlice2 = seq[(ch2TotalSlices - 1) - currentStep2];
+            } else {
+                targetSlice2 = seq[currentStep2];
+            }
+
             uint32_t jitterOffset = 0;
             if (latchedJitterAmt > 0) {
                 uint32_t maxJitter = currentSliceLength / 2;
                 jitterOffset = (rnd12() * latchedJitterAmt * maxJitter) / (4095 * 4095);
             }
 
+            // Both playheads locate their designated slice inside the physical master buffer
             newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % activeBufferLength;
             newPlayPos2 = (frozenWriteInd + (targetSlice2 * currentSliceLength) + jitterOffset) % activeBufferLength;
             
@@ -294,6 +317,10 @@ public:
             
             currentStep++;
             if (currentStep >= totalSlices) currentStep = 0;
+            
+            // CH2 loops its sequence back to 0 independently!
+            currentStep2++;
+            if (currentStep2 >= ch2TotalSlices) currentStep2 = 0;
             
             PulseOut1(true); 
         } else {
@@ -316,7 +343,6 @@ public:
         } 
         else if (currentMode == SLICE) {
             
-            // FAST INTEGER MATH for gate calculation (>> 12 is divided by 4096)
             uint32_t allowedPlaySamples = (currentSliceLength * latchedGateInt) >> 12;
             
             int ratchets = latchedRatchets;
@@ -334,7 +360,6 @@ public:
             // --- CH1 DSP ---
             int32_t out1 = 0; 
 
-            // Ratchet Trigger Check (Always runs, relies on 'ratchets' value)
             ratchetSubTimer1++;
             if (ratchetSubTimer1 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer1 = 0;
@@ -342,7 +367,6 @@ public:
                 xfadeInd1 = xfadeLen;
             }
 
-            // Gate Muting
             if (samplesPlayedInSlice1 < allowedPlaySamples) {
                 if (xfadeInd1 > 0) {
                     int32_t oldVal = buffer[playPos1];
@@ -369,7 +393,6 @@ public:
             // --- CH2 DSP ---
             int32_t out2 = 0; 
             
-            // Ratchet Trigger Check (Always runs, relies on 'ratchets' value)
             ratchetSubTimer2++;
             if (ratchetSubTimer2 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer2 = 0;
@@ -405,21 +428,13 @@ public:
         // 6. UI INDICATORS
         // ---------------------------------------------------------
         
-        // LED 0: Solid in Record Mode, Pulses with triggers in Slice Mode
-        if (currentMode == RECORD) {
-            LedOn(0, true);
-        } else {
-            LedOn(0, sliceTimer < 1000); // ~20ms flash at the start of each slice
-        }
 
-        // LED 1: Reverse Status
-        LedOn(1, reverseCh2); 
-        
-        // LEDs 2-5: Always show the current Y-Knob Mode
-        LedOn(2, yKnobMode == 0 || yKnobMode == 4); // Gate
-        LedOn(3, yKnobMode == 1 || yKnobMode == 4);  // Ratchet
-        LedOn(4, yKnobMode == 2 || yKnobMode == 4); // Jitter
-        LedOn(5, yKnobMode == 3 || yKnobMode == 4);// Pitch
+        LedOn(0, reverseCh2); 
+        LedON(1, yKnobMode == 5 || yKnobMode == 4)
+        LedOn(2, yKnobMode == 0 || yKnobMode == 4); 
+        LedOn(3, yKnobMode == 1 || yKnobMode == 4); 
+        LedOn(4, yKnobMode == 2 || yKnobMode == 4); 
+        LedOn(5, yKnobMode == 3 || yKnobMode == 4); 
 
         CVOut1((currentStep * 4095) / totalSlices);
     }
