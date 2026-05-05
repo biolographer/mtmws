@@ -242,8 +242,7 @@ public:
                 }
             }
         } else {
-            activeBufferLength = bufSize; 
-            ch2ActiveBufferLength = bufSize;
+            activeBufferLength = ch2ActiveBufferLength = bufSize; 
         }
 
         uint32_t triggerInterval = (activeBufferLength * DOWNSAMPLE_FACTOR) / totalSlices;
@@ -266,16 +265,8 @@ public:
             if (mainKnob < 100) {
                 seq[currentStep] = currentStep % totalSlices; 
             } 
-            else if (mainKnob > 4000) {
-                // Loop locked
-            } 
-            else {
-                int prob;
-                if (mainKnob <= 2048) {
-                    prob = (mainKnob - 100) * 4095 / 1948; 
-                } else {
-                    prob = (4000 - mainKnob) * 4095 / 1952; 
-                }
+            else if (mainKnob <= 4000) {
+                int prob = (mainKnob <= 2048) ? (mainKnob - 100) * 4095 / 1948 : (4000 - mainKnob) * 4095 / 1952;
                 if (rnd12() < prob) {
                     seq[currentStep] = rnd12() % totalSlices; 
                 }
@@ -289,14 +280,7 @@ public:
             if (ch2TotalSlices < 1) ch2TotalSlices = 1;
 
             uint32_t targetSlice1 = seq[currentStep];
-            
-            // Reverse reads backwards from the length of CH2's sequence loop
-            uint32_t targetSlice2;
-            if (reverseCh2) {
-                targetSlice2 = seq[(ch2TotalSlices - 1) - currentStep2];
-            } else {
-                targetSlice2 = seq[currentStep2];
-            }
+            uint32_t targetSlice2 = reverseCh2 ? seq[(ch2TotalSlices - 1) - currentStep2] : seq[currentStep2];
 
             uint32_t jitterOffset = 0;
             if (latchedJitterAmt > 0) {
@@ -323,8 +307,7 @@ public:
             if (currentStep2 >= ch2TotalSlices) currentStep2 = 0;
             
             PulseOut1(true); 
-        } else {
-            PulseOut1(false);
+            PulseOut2(true); // Start gate for CH2
         }
 
         // ---------------------------------------------------------
@@ -340,6 +323,8 @@ public:
             }
             AudioOut1(audioIn);
             AudioOut2(audioIn);
+            PulseOut1(false);
+            PulseOut2(false);
         } 
         else if (currentMode == SLICE) {
             
@@ -365,6 +350,7 @@ public:
                 ratchetSubTimer1 = 0;
                 playPos1 = newPlayPos1; 
                 xfadeInd1 = xfadeLen;
+                PulseOut1(true); // Re-trigger on ratchet
             }
 
             if (samplesPlayedInSlice1 < allowedPlaySamples) {
@@ -387,6 +373,8 @@ public:
                         samplesPlayedInSlice1++; 
                     }
                 }
+            } else {
+                PulseOut1(false); // End gate
             }
             AudioOut1(out1);
 
@@ -398,6 +386,7 @@ public:
                 ratchetSubTimer2 = 0;
                 playPos2 = newPlayPos2;
                 xfadeInd2 = xfadeLen;
+                PulseOut2(true); // Re-trigger on ratchet
             }
 
             if (samplesPlayedInSlice2 < allowedPlaySamples) {
@@ -420,6 +409,8 @@ public:
                         samplesPlayedInSlice2++; 
                     }
                 }
+            } else {
+                PulseOut2(false); // End gate
             }
             AudioOut2(out2);
         }
@@ -430,7 +421,7 @@ public:
         
 
         LedOn(0, reverseCh2); 
-        LedON(1, yKnobMode == 5 || yKnobMode == 4);
+        LedOn(1, yKnobMode == 5 || yKnobMode == 4);
         LedOn(2, yKnobMode == 0 || yKnobMode == 4); 
         LedOn(3, yKnobMode == 1 || yKnobMode == 4); 
         LedOn(4, yKnobMode == 2 || yKnobMode == 4); 
