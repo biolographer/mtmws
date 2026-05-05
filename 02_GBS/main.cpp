@@ -430,7 +430,7 @@ public:
         
 
         LedOn(0, reverseCh2); 
-        LedON(1, yKnobMode == 5 || yKnobMode == 4)
+        LedON(1, yKnobMode == 5 || yKnobMode == 4);
         LedOn(2, yKnobMode == 0 || yKnobMode == 4); 
         LedOn(3, yKnobMode == 1 || yKnobMode == 4); 
         LedOn(4, yKnobMode == 2 || yKnobMode == 4); 
