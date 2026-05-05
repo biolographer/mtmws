@@ -11,9 +11,12 @@ uint32_t __not_in_flash_func(rnd12)()
 class GranularSlicer : public ComputerCard
 {
 public:
-    static constexpr uint32_t bufSize = 96000; // 2 seconds at 48kHz
+    static constexpr uint32_t bufSize = 96000; // 4 seconds at 24kHz (downsampled 48kHz)
     int16_t buffer[bufSize];
     
+    // Rhythmic Buffer Size
+    uint32_t activeBufferLength = bufSize; 
+
     // Buffer Trackers
     uint32_t writeInd = 0;
     uint32_t frozenWriteInd = 0;
@@ -35,9 +38,12 @@ public:
     uint32_t pitchSubTick1 = 0;
     uint32_t pitchSubTick2 = 0;
     
-    // Clock & Striation Timers
+    // Clock & Sync Trackers
     uint32_t samplesSinceLastClock = 0;
-    uint32_t cycleLengthSamples = 48000;
+    uint32_t smoothedPulseLength = 0;
+    bool clockWasStopped = true;
+
+    // Slicing Timers
     uint32_t sliceTimer = 0;
     uint32_t currentSliceLength = 0;
     
@@ -102,7 +108,7 @@ public:
         int totalSlices = (KnobVal(Knob::X) * 64) / 4096;
         if (totalSlices < 1) totalSlices = 1;
 
-        int32_t yVal = KnobVal(Knob::Y); // 0 to 4095
+        int32_t yVal = KnobVal(Knob::Y);
 
         // True Catch-Up Takeover Logic
         if (!yKnobActive) {
@@ -140,41 +146,31 @@ public:
         // ---------------------------------------------------------
         // 2. STATE MANAGER & UI GESTURES
         // ---------------------------------------------------------
-        
-        // DOWN Gestures: Short Tap, 0.5s Hold, 1.5s Hold
         if (s == Switch::Down) {
             switchHoldDownTimer++;
 
-            // 0.5s Hold (24000 samples) -> Toggle Reverse Mode
             if (switchHoldDownTimer >= 24000 && !reverseTriggered) {
                 reverseCh2 = !reverseCh2; 
                 reverseTriggered = true;
             }
-
-            // 1.5s Hold (72000 samples) -> Reset Sequence
             if (switchHoldDownTimer >= 72000 && !resetTriggered) {
                 currentStep = 0;
                 sliceTimer = 0;
                 resetTriggered = true;
             }
         } else {
-            // RELEASE ACTION: Transitioning out of the DOWN state
             if (lastSwitch == Switch::Down) {
-                // Short Tap check: Released before 0.5s
                 if (switchHoldDownTimer < 24000) {
                     yKnobMode++;
                     if (yKnobMode > 3) yKnobMode = 0;
-                    
-                    yKnobActive = false; // Put the knob to sleep until it catches up
+                    yKnobActive = false; 
                 }
             }
-            // Reset timers when switch is not down
             switchHoldDownTimer = 0;
             reverseTriggered = false;
             resetTriggered = false;
         }
 
-        // Standard Switch Actions
         if (s == Switch::Up && lastSwitch != Switch::Up) {
             currentMode = RECORD;
         } 
@@ -187,27 +183,55 @@ public:
         lastSwitch = s;
 
         // ---------------------------------------------------------
-        // 3. PINGABLE CLOCK & X-GRID CALCULATION
+        // 3. 24 PPQN CLOCK & DAW-SYNCED BUFFER MAXIMIZATION
         // ---------------------------------------------------------
-        bool triggerNextSlice = false;
-        
         if (Connected(Input::Pulse1)) {
             samplesSinceLastClock++;
+            
+            // Auto-reset: If clock stops for > 1 sec (48000 samples @ 48kHz), prime for DAW start
+            if (samplesSinceLastClock > 48000) {
+                clockWasStopped = true;
+            }
+
             if (PulseInRisingEdge(1)) {
-                cycleLengthSamples = samplesSinceLastClock;
+                
+                // Hard sync to DAW downbeat when transport starts
+                if (clockWasStopped) {
+                    currentStep = 0;
+                    sliceTimer = 0;
+                    writeInd = 0; 
+                    smoothedPulseLength = samplesSinceLastClock; // Prime smoother
+                    clockWasStopped = false;
+                }
+
+                // Smooth jitter from external analog clock signals
+                uint32_t currentPulseLength = samplesSinceLastClock;
+                smoothedPulseLength = (smoothedPulseLength * 3 + currentPulseLength) / 4;
                 samplesSinceLastClock = 0;
-                currentStep = 0; 
-                sliceTimer = 0;
-                triggerNextSlice = true;
+
+                // 24 PPQN MATH: 24 pulses = 1 Quarter Note
+                uint32_t beatLengthSamples = smoothedPulseLength * 24;
+                uint32_t bufferSamplesPerBeat = beatLengthSamples / DOWNSAMPLE_FACTOR;
+                
+                // Maximize buffer to fit as many WHOLE quarter notes as possible
+                if (bufferSamplesPerBeat > 0 && bufferSamplesPerBeat <= bufSize) {
+                    uint32_t maxBeats = bufSize / bufferSamplesPerBeat;
+                    activeBufferLength = maxBeats * bufferSamplesPerBeat;
+                } else {
+                    activeBufferLength = bufSize; 
+                }
             }
         } else {
             // Matches the internal timer to the total time it takes to fill the buffer
             cycleLengthSamples = bufSize * DOWNSAMPLE_FACTOR;
         }
 
-        uint32_t triggerInterval = cycleLengthSamples / totalSlices;
+        // --- INDEPENDENT SLICING TIMER ---
+        // Slices the active buffer evenly, completely independent of the beat grid
+        uint32_t triggerInterval = (activeBufferLength * DOWNSAMPLE_FACTOR) / totalSlices;
         if (triggerInterval == 0) triggerInterval = 1; 
 
+        bool triggerNextSlice = false;
         sliceTimer++;
         if (sliceTimer >= triggerInterval) {
             sliceTimer = 0;
@@ -219,7 +243,7 @@ public:
         // ---------------------------------------------------------
         if (currentMode == SLICE && triggerNextSlice) {
             int mainKnob = KnobVal(Knob::Main);
-            currentSliceLength = bufSize / totalSlices;
+            currentSliceLength = activeBufferLength / totalSlices;
             
             // TURING LOGIC
             if (mainKnob < 100) {
@@ -250,8 +274,8 @@ public:
                 jitterOffset = (rnd12() * latchedJitterAmt * maxJitter) / (4095 * 4095);
             }
 
-            newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % bufSize;
-            newPlayPos2 = (frozenWriteInd + (targetSlice2 * currentSliceLength) + jitterOffset) % bufSize;
+            newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % activeBufferLength;
+            newPlayPos2 = (frozenWriteInd + (targetSlice2 * currentSliceLength) + jitterOffset) % activeBufferLength;
             
             xfadeInd1 = xfadeLen; 
             xfadeInd2 = xfadeLen;
@@ -277,7 +301,7 @@ public:
             if (dsTick == 0) {
                 buffer[writeInd] = audioIn;
                 writeInd++;
-                if (writeInd >= bufSize) writeInd = 0;
+                if (writeInd >= activeBufferLength) writeInd = 0; 
             }
             AudioOut1(audioIn);
             AudioOut2(audioIn);
@@ -318,8 +342,8 @@ public:
                     out1 = (oldVal * xfadeInd1 + newVal * (xfadeLen - xfadeInd1)) / xfadeLen;
                     
                     if (dsTick == 0) {
-                        playPos1 = (playPos1 + pitchAdvance) % bufSize;
-                        newPlayPos1 = (newPlayPos1 + pitchAdvance) % bufSize;
+                        playPos1 = (playPos1 + pitchAdvance) % activeBufferLength;
+                        newPlayPos1 = (newPlayPos1 + pitchAdvance) % activeBufferLength;
                         samplesPlayedInSlice1++; 
                         xfadeInd1--;
                         if (xfadeInd1 == 0) playPos1 = newPlayPos1;
@@ -327,14 +351,14 @@ public:
                 } else {
                     out1 = buffer[playPos1];
                     if (dsTick == 0) {
-                        playPos1 = (playPos1 + pitchAdvance) % bufSize;
+                        playPos1 = (playPos1 + pitchAdvance) % activeBufferLength;
                         samplesPlayedInSlice1++; 
                     }
                 }
             }
             AudioOut1(out1);
 
-            // --- CH2 DSP (Identical but follows CH2 trackers) ---
+            // --- CH2 DSP ---
             int32_t out2 = 0; 
             
             // Ratchet Trigger Check (Always runs, relies on 'ratchets' value)
@@ -352,8 +376,8 @@ public:
                     out2 = (oldVal * xfadeInd2 + newVal * (xfadeLen - xfadeInd2)) / xfadeLen;
                     
                     if (dsTick == 0) {
-                        playPos2 = (playPos2 + pitchAdvance) % bufSize;
-                        newPlayPos2 = (newPlayPos2 + pitchAdvance) % bufSize;
+                        playPos2 = (playPos2 + pitchAdvance) % activeBufferLength;
+                        newPlayPos2 = (newPlayPos2 + pitchAdvance) % activeBufferLength;
                         samplesPlayedInSlice2++; 
                         xfadeInd2--;
                         if (xfadeInd2 == 0) playPos2 = newPlayPos2;
@@ -361,7 +385,7 @@ public:
                 } else {
                     out2 = buffer[playPos2];
                     if (dsTick == 0) {
-                        playPos2 = (playPos2 + pitchAdvance) % bufSize;
+                        playPos2 = (playPos2 + pitchAdvance) % activeBufferLength;
                         samplesPlayedInSlice2++; 
                     }
                 }
