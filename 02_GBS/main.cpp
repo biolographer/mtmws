@@ -104,9 +104,15 @@ public:
         }
 
         // ---------------------------------------------------------
-        // 1. Read Knobs & Update Latched Memory
+        // 1. Read Knobs, CV & Update Latched Memory
         // ---------------------------------------------------------
-        int totalSlices = (KnobVal(Knob::X) * 64) / 4096;
+        
+        // Add CV1 to X Knob to modulate total slices, clamp to 0-4095
+        int32_t combinedX = KnobVal(Knob::X) + CVIn1();
+        if (combinedX < 0) combinedX = 0;
+        if (combinedX > 4095) combinedX = 4095;
+        
+        int totalSlices = (combinedX * 64) / 4096;
         if (totalSlices < 1) totalSlices = 1;
 
         int32_t yVal = KnobVal(Knob::Y);
@@ -131,7 +137,7 @@ public:
                 latchedRatchets = 1 + (yVal * 4) / 4096; 
             }
             else if (yKnobMode == 2) {
-                latchedJitterAmt = yVal;
+                latchedJitterAmt = yVal; // Base jitter amount (before CV)
             }
             else if (yKnobMode == 3) {
                 if (yVal < 1365) latchedPitchState = 0; 
@@ -197,7 +203,6 @@ public:
                 clockWasStopped = true;
             }
 
-            // [FIXED] Correctly monitoring Pulse 1 input pin
             if (PulseIn1RisingEdge()) {
                 
                 // Hard sync to DAW downbeat when transport starts
@@ -284,10 +289,15 @@ public:
             uint32_t targetSlice2 = reverseCh2 ? seq[(ch2TotalSlices - 1) - currentStep2] : seq[currentStep2];
 
             uint32_t jitterOffset = 0;
-            if (latchedJitterAmt > 0) {
+            
+            // Add CV2 to latched jitter amount, clamp to 0-4095
+            int32_t activeJitter = latchedJitterAmt + CVIn2();
+            if (activeJitter < 0) activeJitter = 0;
+            if (activeJitter > 4095) activeJitter = 4095;
+
+            if (activeJitter > 0) {
                 uint32_t maxJitter = currentSliceLength / 2;
-                // [FIXED] Force 64-bit integer math to prevent wraparound overflow
-                jitterOffset = ((uint64_t)rnd12() * latchedJitterAmt * maxJitter) / 16769025ULL;
+                jitterOffset = ((uint64_t)rnd12() * activeJitter * maxJitter) / 16769025ULL;
             }
 
             // Both playheads locate their designated slice inside the physical master buffer
@@ -350,7 +360,6 @@ public:
             ratchetSubTimer1++;
             if (ratchetSubTimer1 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer1 = 0;
-                // [FIXED] Reset sample counter on ratchet to keep gate open
                 samplesPlayedInSlice1 = 0; 
                 playPos1 = newPlayPos1; 
                 xfadeInd1 = xfadeLen;
@@ -388,7 +397,6 @@ public:
             ratchetSubTimer2++;
             if (ratchetSubTimer2 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer2 = 0;
-                // [FIXED] Reset sample counter on ratchet to keep gate open
                 samplesPlayedInSlice2 = 0; 
                 playPos2 = newPlayPos2;
                 xfadeInd2 = xfadeLen;
