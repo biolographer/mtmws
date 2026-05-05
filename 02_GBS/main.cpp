@@ -68,9 +68,11 @@ public:
     // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch
     uint8_t yKnobMode = 0; 
     
-    // Knob Takeover State
-    int lastYKnobPos = 0;
+    // True Catch-up Takeover State
     bool yKnobActive = true;
+    // Store the raw 0-4095 value for each mode. 
+    // Defaults: Gate=Full, Ratchet=1, Jitter=0, Pitch=Normal
+    int32_t latchedYKnobRaw[4] = {4095, 0, 0, 2048}; 
     
     // Latched Y-Knob Parameters
     float latchedGate = 1.0f;
@@ -100,22 +102,24 @@ public:
         int totalSlices = (KnobVal(Knob::X) * 64) / 4096;
         if (totalSlices < 1) totalSlices = 1;
 
-        int yVal = KnobVal(Knob::Y); // 0 to 4095
+        int32_t yVal = KnobVal(Knob::Y); // 0 to 4095
 
-        // Check if user has moved the knob enough to "wake it up" for this mode.
-        // A threshold of 64 prevents ADC noise from waking it up accidentally.
+        // True Catch-Up Takeover Logic
         if (!yKnobActive) {
-            if (yVal > lastYKnobPos + 64 || yVal < lastYKnobPos - 64) {
+            int32_t targetVal = latchedYKnobRaw[yKnobMode];
+            int32_t diff = yVal - targetVal;
+            
+            // If the physical knob is within ~2.5% of the stored value, take over
+            if (diff > -100 && diff < 100) {
                 yKnobActive = true;
             }
         }
 
-        // Only update memory if the knob has been actively nudged by the user
+        // Only update memory if the knob has caught up to the stored value
         if (yKnobActive) {
-            lastYKnobPos = yVal; // Keep tracking the position
+            latchedYKnobRaw[yKnobMode] = yVal; // Update the raw storage
 
-            // --- UPDATE LATCHED MEMORY ---
-            // Only updates the specific variable tied to the currently active mode
+            // --- UPDATE LATCHED PARAMETERS ---
             if (yKnobMode == 0) {
                 latchedGate = (yVal / 4095.0f);
                 if (latchedGate < 0.01f) latchedGate = 0.01f;
@@ -161,8 +165,7 @@ public:
                     yKnobMode++;
                     if (yKnobMode > 3) yKnobMode = 0;
                     
-                    yKnobActive = false;             // Put the knob to sleep in the new mode
-                    lastYKnobPos = KnobVal(Knob::Y); // Take a snapshot of its physical position
+                    yKnobActive = false; // Put the knob to sleep until it catches up
                 }
             }
             // Reset timers when switch is not down
