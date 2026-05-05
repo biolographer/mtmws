@@ -58,6 +58,8 @@
     - CV in 1 & 2
         - Slice number (x knob)
         - probability (main knob)
+        - phase window
+        - jitter modulated by vco
     - Pulse in 2
         - toggle reverse
         - Freeze: stop writeInd from advancing in record mode
