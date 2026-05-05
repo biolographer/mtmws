@@ -43,9 +43,8 @@ public:
     uint32_t smoothedPulseLength = 0;
     bool clockWasStopped = true;
 
-    // Slicing Timers (Independent for True Phasing)
-    uint32_t sliceTimer1 = 0;
-    uint32_t sliceTimer2 = 0;
+    // Slicing Timers (Unified for perfect Tempo lock)
+    uint32_t sliceTimer = 0;
     uint32_t currentSliceLength = 0;
     
     // Y-Knob Mode Variables
@@ -86,7 +85,7 @@ public:
     int latchedPitchState = 1; 
     int latchedJitterAmt = 0;
     int latchedBarLength = 4;
-    uint32_t latchedPhaseWindow = 0; // 0 = Full Sync, 4095 = Fastest Phase Drift
+    uint32_t latchedPhaseWindow = 0; // 0 = Full Sequence, 4095 = Shortest Phrase (1 step)
 
     GranularSlicer()
     {
@@ -165,8 +164,7 @@ public:
             if (switchHoldDownTimer >= 72000 && !resetTriggered) {
                 currentStep = 0;
                 currentStep2 = 0; // Reset polymeter phase
-                sliceTimer1 = 0;
-                sliceTimer2 = 0;
+                sliceTimer = 0;
                 resetTriggered = true;
             }
         } else {
@@ -210,8 +208,7 @@ public:
                 if (clockWasStopped) {
                     currentStep = 0;
                     currentStep2 = 0; 
-                    sliceTimer1 = 0;
-                    sliceTimer2 = 0;
+                    sliceTimer = 0;
                     writeInd = 0; 
                     smoothedPulseLength = samplesSinceLastClock; 
                     clockWasStopped = false;
@@ -242,96 +239,79 @@ public:
             activeBufferLength = bufSize; 
         }
 
-        // Calculate independent trigger intervals
-        uint32_t triggerInterval1 = (activeBufferLength * DOWNSAMPLE_FACTOR) / totalSlices;
-        if (triggerInterval1 == 0) triggerInterval1 = 1; 
+        // Single Unified Clock Interval (Tempo stays identical for both)
+        uint32_t triggerInterval = (activeBufferLength * DOWNSAMPLE_FACTOR) / totalSlices;
+        if (triggerInterval == 0) triggerInterval = 1; 
 
-        // CH2 runs slightly faster based on Phase Window (up to 25% faster)
-        uint32_t triggerInterval2 = triggerInterval1 - ((triggerInterval1 * latchedPhaseWindow) / 16384);
-        if (triggerInterval2 == 0) triggerInterval2 = 1;
-
-        bool triggerCH1 = false;
-        sliceTimer1++;
-        if (sliceTimer1 >= triggerInterval1) {
-            sliceTimer1 = 0;
-            triggerCH1 = true;
-        }
-
-        bool triggerCH2 = false;
-        sliceTimer2++;
-        if (sliceTimer2 >= triggerInterval2) {
-            sliceTimer2 = 0;
-            triggerCH2 = true;
+        bool triggerNextSlice = false;
+        sliceTimer++;
+        if (sliceTimer >= triggerInterval) {
+            sliceTimer = 0;
+            triggerNextSlice = true;
         }
 
         // ---------------------------------------------------------
-        // 4. THE TURING MACHINE & POLYMETRIC JUMPS (INDEPENDENT)
+        // 4. THE TURING MACHINE & POLYMETRIC JUMPS
         // ---------------------------------------------------------
-        if (currentMode == SLICE) {
+        if (currentMode == SLICE && triggerNextSlice) {
             int mainKnob = KnobVal(Knob::Main);
             currentSliceLength = activeBufferLength / totalSlices;
-
-            // --- TRIGGER CHANNEL 1 ---
-            if (triggerCH1) {
-                if (mainKnob < 100) {
-                    seq[currentStep] = currentStep % totalSlices; 
-                } 
-                else if (mainKnob <= 4000) {
-                    int prob = (mainKnob <= 2048) ? (mainKnob - 100) * 4095 / 1948 : (4000 - mainKnob) * 4095 / 1952;
-                    if (rnd12() < prob) {
-                        seq[currentStep] = rnd12() % totalSlices; 
-                    }
+            
+            // CH1 acts as the "writer" for the Turing sequence
+            if (mainKnob < 100) {
+                seq[currentStep] = currentStep % totalSlices; 
+            } 
+            else if (mainKnob <= 4000) {
+                int prob = (mainKnob <= 2048) ? (mainKnob - 100) * 4095 / 1948 : (4000 - mainKnob) * 4095 / 1952;
+                if (rnd12() < prob) {
+                    seq[currentStep] = rnd12() % totalSlices; 
                 }
-
-                uint32_t targetSlice1 = seq[currentStep];
-
-                uint32_t jitterOffset = 0;
-                int32_t activeJitter = latchedJitterAmt + CVIn2();
-                if (activeJitter < 0) activeJitter = 0;
-                if (activeJitter > 4095) activeJitter = 4095;
-
-                if (activeJitter > 0) {
-                    uint32_t maxJitter = currentSliceLength / 2;
-                    jitterOffset = ((uint64_t)rnd12() * activeJitter * maxJitter) / 16769025ULL;
-                }
-
-                newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % activeBufferLength;
-                
-                xfadeInd1 = xfadeLen; 
-                samplesPlayedInSlice1 = 0;
-                ratchetSubTimer1 = 0;
-                
-                currentStep++;
-                if (currentStep >= totalSlices) currentStep = 0;
-                
-                PulseOut1(true); 
             }
 
-            // --- TRIGGER CHANNEL 2 ---
-            if (triggerCH2) {
-                uint32_t targetSlice2 = reverseCh2 ? seq[(totalSlices - 1) - currentStep2] : seq[currentStep2];
+            // --- PHASE WINDOW: POLYMETER (Shortened Phrase) ---
+            // As Phase Window increases, we subtract steps from CH2's loop length
+            uint32_t stepsToSubtract = ((totalSlices - 1) * latchedPhaseWindow) / 4096;
+            uint32_t ch2TotalSlices = totalSlices - stepsToSubtract;
+            if (ch2TotalSlices < 1) ch2TotalSlices = 1;
 
-                uint32_t jitterOffset = 0;
-                int32_t activeJitter = latchedJitterAmt + CVIn2();
-                if (activeJitter < 0) activeJitter = 0;
-                if (activeJitter > 4095) activeJitter = 4095;
+            // Failsafe: if the knob is turned quickly, snap the playhead back in bounds
+            if (currentStep2 >= ch2TotalSlices) currentStep2 = 0;
 
-                if (activeJitter > 0) {
-                    uint32_t maxJitter = currentSliceLength / 2;
-                    jitterOffset = ((uint64_t)rnd12() * activeJitter * maxJitter) / 16769025ULL;
-                }
+            uint32_t targetSlice1 = seq[currentStep];
+            uint32_t targetSlice2 = reverseCh2 ? seq[(ch2TotalSlices - 1) - currentStep2] : seq[currentStep2];
 
-                newPlayPos2 = (frozenWriteInd + (targetSlice2 * currentSliceLength) + jitterOffset) % activeBufferLength;
-                
-                xfadeInd2 = xfadeLen; 
-                samplesPlayedInSlice2 = 0;
-                ratchetSubTimer2 = 0;
-                
-                currentStep2++;
-                if (currentStep2 >= totalSlices) currentStep2 = 0;
-                
-                PulseOut2(true); 
+            // Add CV2 to latched jitter amount, clamp to 0-4095
+            uint32_t jitterOffset = 0;
+            int32_t activeJitter = latchedJitterAmt + CVIn2();
+            if (activeJitter < 0) activeJitter = 0;
+            if (activeJitter > 4095) activeJitter = 4095;
+
+            if (activeJitter > 0) {
+                uint32_t maxJitter = currentSliceLength / 2;
+                jitterOffset = ((uint64_t)rnd12() * activeJitter * maxJitter) / 16769025ULL;
             }
+
+            // Both playheads locate their designated slice inside the physical master buffer
+            newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % activeBufferLength;
+            newPlayPos2 = (frozenWriteInd + (targetSlice2 * currentSliceLength) + jitterOffset) % activeBufferLength;
+            
+            xfadeInd1 = xfadeLen; 
+            xfadeInd2 = xfadeLen;
+            samplesPlayedInSlice1 = 0;
+            samplesPlayedInSlice2 = 0;
+            ratchetSubTimer1 = 0;
+            ratchetSubTimer2 = 0;
+            
+            // CH1 loops its sequence normally
+            currentStep++;
+            if (currentStep >= totalSlices) currentStep = 0;
+            
+            // CH2 loops its sequence early based on Phase Knob (Polymeter)
+            currentStep2++;
+            if (currentStep2 >= ch2TotalSlices) currentStep2 = 0;
+            
+            PulseOut1(true); 
+            PulseOut2(true); // Start gates for both
         }
 
         // ---------------------------------------------------------
@@ -355,8 +335,7 @@ public:
             uint32_t allowedPlaySamples = (currentSliceLength * latchedGateInt) >> 12;
             
             int ratchets = latchedRatchets;
-            uint32_t ratchetInterval1 = triggerInterval1 / ratchets;
-            uint32_t ratchetInterval2 = triggerInterval2 / ratchets;
+            uint32_t ratchetInterval = triggerInterval / ratchets;
 
             int pitchAdvance = 1;
             if (latchedPitchState == 0) {
@@ -371,7 +350,7 @@ public:
             int32_t out1 = 0; 
 
             ratchetSubTimer1++;
-            if (ratchetSubTimer1 >= ratchetInterval1 && ratchets > 1) {
+            if (ratchetSubTimer1 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer1 = 0;
                 samplesPlayedInSlice1 = 0; 
                 playPos1 = newPlayPos1; 
@@ -408,7 +387,7 @@ public:
             int32_t out2 = 0; 
             
             ratchetSubTimer2++;
-            if (ratchetSubTimer2 >= ratchetInterval2 && ratchets > 1) {
+            if (ratchetSubTimer2 >= ratchetInterval && ratchets > 1) {
                 ratchetSubTimer2 = 0;
                 samplesPlayedInSlice2 = 0; 
                 playPos2 = newPlayPos2;
