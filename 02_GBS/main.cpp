@@ -321,7 +321,14 @@ public:
             uint32_t allowedPlaySamples = (currentSliceLength * latchedGateInt) >> 12;
             int ratchets = latchedRatchets;
             uint32_t ratchetInterval = triggerInterval / ratchets;
-            int pitchAdvance = (latchedPitchState == 0) ? ((++pitchSubTick1 >= 2) ? (pitchSubTick1 = 0, 1) : 0) : ((latchedPitchState == 2) ? 2 : 1);
+            
+            int pitchAdvance = 1;
+            if (latchedPitchState == 2) {
+                pitchAdvance = 2; // Double speed (+1 Octave)
+            } else if (latchedPitchState == 0) {
+                pitchAdvance = pitchSubTick1; // Toggles between 0 and 1 (-1 Octave)
+            }
+
 
             // --- CH1 DSP ---
             int32_t out1 = 0; 
@@ -354,6 +361,12 @@ public:
                 }
             } else PulseOut2(false);
             AudioOut2(out2);
+
+            // Toggle the sub-tick flag every downsampled frame so half-speed works
+            if (dsTick == 0) {
+                pitchSubTick1 ^= 1; 
+            }
+            
         }
         
         // ---------------------------------------------------------
