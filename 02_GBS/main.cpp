@@ -55,7 +55,7 @@ public:
     uint32_t smoothedPulseLength = 0;
     bool clockWasStopped = true;
 
-    // --- NEW: MIDI Clock Trackers ---
+    // --- MIDI Clock Trackers ---
     bool midiClockActive = false;
     uint32_t midiClockTimeout = 0;
 
@@ -79,12 +79,16 @@ public:
     Mode currentMode = RECORD;
     Switch lastSwitch = Switch::Down;
 
+    // CH2 Reverse State
     bool reverseCh2 = false;
+
+    // Switch Down Gesture Tracking
     uint32_t switchHoldDownTimer = 0;
     bool reverseTriggered = false;
     bool resetTriggered = false;
 
     // Y-Knob Multi-Mode State
+    // 0: Gate, 1: Ratchet, 2: Jitter, 3: Pitch, 4: Bar Length, 5: Phase Window
     uint8_t yKnobMode = 4; 
     
     bool yKnobActive = true;
@@ -112,9 +116,15 @@ public:
         }
 
         // ---------------------------------------------------------
-        // 1. Read Knobs & Update Latched Memory
+        // 1. Read Knobs, CV & Update Latched Memory
         // ---------------------------------------------------------
-        int totalSlices = (KnobVal(Knob::X) * 64) / 4096;
+        
+        // CV 1 restores X-Knob modulation
+        int32_t combinedX = KnobVal(Knob::X) + CVIn1();
+        if (combinedX < 0) combinedX = 0;
+        if (combinedX > 4095) combinedX = 4095;
+        
+        int totalSlices = (combinedX * 64) / 4096;
         if (totalSlices < 1) totalSlices = 1;
 
         int32_t yVal = KnobVal(Knob::Y);
@@ -136,7 +146,19 @@ public:
                 else latchedPitchState = 1; 
             }
             else if (yKnobMode == 4) latchedBarLength = 1 + (yVal * 8) / 4096; 
-            else if (yKnobMode == 5) latchedPhaseWindow = yVal; 
+            else if (yKnobMode == 5) {
+                int32_t newPhaseWindow = yVal;
+                
+                // Add Deadzone to ensure it hits exactly 0
+                if (newPhaseWindow < 20) newPhaseWindow = 0;
+                
+                // Snap-to-Sync: Instantly realign patterns when returned to 0
+                if (newPhaseWindow == 0 && latchedPhaseWindow > 0) {
+                    currentStep2 = currentStep;
+                }
+                
+                latchedPhaseWindow = newPhaseWindow; 
+            } 
         }
 
         // ---------------------------------------------------------
@@ -167,27 +189,23 @@ public:
         bool physicalClockConnected = Connected(Input::Pulse1);
         bool clockTriggered = false;
 
-        // Process all incoming MIDI messages from Core 0
         MIDIMessage msg;
         while (queue_try_remove(&midi_queue, &msg)) {
-            if (msg.status == 0xF8) { // MIDI Timing Clock
+            if (msg.status == 0xF8) { 
                 midiClockActive = true;
                 midiClockTimeout = 0;
-                // If NO physical cable is patched, we use the MIDI clock trigger
                 if (!physicalClockConnected) clockTriggered = true;
             } 
-            else if (msg.status == 0xFA || msg.status == 0xFC) { // MIDI Start or Stop
+            else if (msg.status == 0xFA || msg.status == 0xFC) { 
                 if (!physicalClockConnected) clockWasStopped = true;
             }
         }
 
-        // MIDI Clock Timeout Failsafe (~2 seconds at 48kHz)
         if (midiClockActive) {
             midiClockTimeout++;
             if (midiClockTimeout > 96000) midiClockActive = false;
         }
 
-        // Check Physical Clock (Overrides MIDI)
         if (physicalClockConnected) {
             if (PulseInRisingEdge(1)) {
                 clockTriggered = true;
@@ -260,10 +278,16 @@ public:
             uint32_t targetSlice1 = seq[currentStep];
             uint32_t targetSlice2 = reverseCh2 ? seq[(ch2TotalSlices - 1) - currentStep2] : seq[currentStep2];
 
+            // Restored CV 2 into Jitter calculation
             uint32_t jitterOffset = 0;
-            if (latchedJitterAmt > 0) {
+            int32_t activeJitter = latchedJitterAmt + CVIn2();
+            if (activeJitter < 0) activeJitter = 0;
+            if (activeJitter > 4095) activeJitter = 4095;
+
+            if (activeJitter > 0) {
                 uint32_t maxJitter = currentSliceLength / 2;
-                jitterOffset = (rnd12() * latchedJitterAmt * maxJitter) / (4095 * 4095);
+                // Cast to uint64_t prevents integer overflow before dividing
+                jitterOffset = ((uint64_t)rnd12() * activeJitter * maxJitter) / (4095 * 4095);
             }
 
             newPlayPos1 = (frozenWriteInd + (targetSlice1 * currentSliceLength) + jitterOffset) % activeBufferLength;
@@ -282,7 +306,6 @@ public:
         // ---------------------------------------------------------
         // 5. AUDIO ROUTING & DSP
         // ---------------------------------------------------------
-        // Physical Audio In 1 continues to act as the sole audio source
         int32_t audioIn = AudioIn1();
 
         if (currentMode == RECORD) {
@@ -351,36 +374,29 @@ public:
 GranularSlicer* looper_ptr = nullptr;
 
 void core1_entry() {
-    // Core 1 handles the high-priority DSP thread
     looper_ptr->Run(); 
 }
 
 int main()
 {
-    // Initialize system hardware and USB stack
     set_sys_clock_khz(160000, true);
     stdio_init_all();
     tusb_init();
 
-    // 1. Initialize the thread-safe MIDI Queue
     queue_init(&midi_queue, sizeof(MIDIMessage), 32);
 
-    // 2. Instantiate the Granular Slicer
     GranularSlicer slicer;
     looper_ptr = &slicer;
     slicer.EnableNormalisationProbe();
 
-    // 3. Launch the DSP engine on Core 1
     multicore_launch_core1(core1_entry);
 
-    // 4. Core 0 Loop: Handles TinyUSB background tasks and MIDI ingestion
     while (1) {
         tud_task(); 
         
         if (tud_midi_available()) {
             uint8_t packet[4];
             while (tud_midi_packet_read(packet)) {
-                // packet[1] is the status byte (e.g., 0xF8 for Clock)
                 MIDIMessage msg = { packet[1], packet[2], packet[3] };
                 queue_try_add(&midi_queue, &msg);
             }
