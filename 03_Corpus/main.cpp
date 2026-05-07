@@ -1,3 +1,4 @@
+#include <cstdint>
 #include "ComputerCard.h"
 #include "corpus_data.h"
 
@@ -14,15 +15,41 @@ private:
     uint32_t playhead = 0;
     bool is_playing = false;
 
-    // ... [find_nearest_sample function remains exactly the same] ...
+    // Marked 'inline' to avoid function-call overhead inside the fast audio interrupt
+    inline int find_nearest_sample(int32_t cv_x, int32_t cv_y) {
+        // Safety guard: if no samples exist, just return index 0
+        if (NUM_SAMPLES <= 0) return 0;
+
+        int best_index = 0;
+        
+        // Use the standard macro for the maximum possible 32-bit integer
+        int32_t min_dist_sq = INT32_MAX; 
+
+        for (int i = 0; i < NUM_SAMPLES; i++) {
+            // Calculate distance without floating point math
+            int32_t dx = cv_x - corpus[i].x;
+            int32_t dy = cv_y - corpus[i].y;
+            
+            // We don't need std::sqrt(), comparing squared distances works perfectly
+            int32_t dist_sq = (dx * dx) + (dy * dy);
+            
+            if (dist_sq < min_dist_sq) {
+                min_dist_sq = dist_sq;
+                best_index = i;
+            }
+        }
+        return best_index;
+    }
 
 public:
     void ProcessSample() override {
         
         // 1. TRIGGER LOGIC
         if (PulseIn1RisingEdge()) {
+            // CVIn returns int16_t (-2048 to 2047). Promoted safely to int32_t.
             int32_t current_x = CVIn1(); 
             int32_t current_y = CVIn2();
+            
             int target = find_nearest_sample(current_x, current_y);
 
             current_sample_data = corpus[target].data;
@@ -35,6 +62,7 @@ public:
         // 2. AUDIO PLAYBACK LOGIC
         if (is_playing) {
             // Calculate the actual index in the flash array based on the factor
+            // (e.g., if factor is 2, it holds each sample for two ticks creating a 24kHz rate)
             uint32_t flash_index = playhead / DOWNSAMPLE_FACTOR;
             
             // Check if we haven't reached the end of the stored sample
