@@ -34,6 +34,7 @@
 *.a
 *.lib
 
+
 # Executables
 *.exe
 *.out
@@ -71,3 +72,8 @@ Testing/
 
 pico-sdk
 .DS_Store
+03_Corpus/samples/*
+
+test
+
+corpus_data.h
