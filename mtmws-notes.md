@@ -83,7 +83,9 @@
 ### UI ideas
 - X & Y = coordinate offset
 - Switch
-    - Up: Loop the current sample, to explore the map live
+    - Up: 
+        - Loop the current sample, to explore the map live
+        - alt mode controls: Sample VCA, Envelope AR, Voice number?
     - Middle: live mode, sample is triggered when PulseIn1 receives a trigger
     - Down:
         - Ratchet
@@ -122,6 +124,7 @@
     - The Fix: Only allow the module to read the X/Y knobs and CV inputs at the exact moment a trigger is received on Pulse 1.
 - Audio Crossfading between multiple neighboring samples
     - neighborhood can be precomputed
+- [x] Add voices for overlapping samples
 
 ---
 
