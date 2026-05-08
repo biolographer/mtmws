@@ -32,7 +32,8 @@ private:
     int32_t secondary_param_main = 0;
 
     inline int find_nearest_sample(int32_t target_x, int32_t target_y) {
-        if (NUM_SAMPLES <= 0) return 0;
+        // Fix: Return -1 so we don't attempt to access index 0 of an empty array
+        if (NUM_SAMPLES <= 0) return -1;
         int best_index = 0;
         int32_t min_dist_sq = INT32_MAX; 
         for (int i = 0; i < NUM_SAMPLES; i++) {
@@ -68,8 +69,9 @@ public:
             // Calculate modulation magnitude based on the Spread (Main) knob.
             // Multiply CV by Spread, then divide by 4096 (using >> 12 for CPU speed).
             // If Spread is 0, cv_mod is 0. If Spread is max, cv_mod is 100% of CVIn.
-            int32_t cv_mod_x = (CVIn1() * spread) >> 12;
-            int32_t cv_mod_y = (CVIn2() * spread) >> 12;
+            // Fix: Replaced >> 12 with / 4096 to prevent signed bit-shifting bugs
+            int32_t cv_mod_x = (CVIn1() * spread) / 4096;
+            int32_t cv_mod_y = (CVIn2() * spread) / 4096;
             
             held_x = base_x + cv_mod_x; 
             held_y = base_y + cv_mod_y;
@@ -96,18 +98,21 @@ public:
 
             int target = find_nearest_sample(held_x, held_y);
 
-            // 3. VOICE ALLOCATION (Round-Robin Stealing)
-            // We assign the new sample to 'next_voice'. 
-            // If it was already playing an old sample, it gets instantly overwritten (stolen).
-            voices[next_voice].data = corpus[target].data;
-            voices[next_voice].length = corpus[target].length;
-            voices[next_voice].playhead = 0;
-            voices[next_voice].is_playing = true;
+            // Fix: Only allocate and play if target is mathematically valid (prevents Segfault)
+            if (target >= 0) {
+                // 3. VOICE ALLOCATION (Round-Robin Stealing)
+                // We assign the new sample to 'next_voice'. 
+                // If it was already playing an old sample, it gets instantly overwritten (stolen).
+                voices[next_voice].data = corpus[target].data;
+                voices[next_voice].length = corpus[target].length;
+                voices[next_voice].playhead = 0;
+                voices[next_voice].is_playing = true;
 
-            // Move the pointer to the next voice, wrapping back to 0 if it hits the limit
-            next_voice = (next_voice + 1) % NUM_VOICES;
-            
-            LedOn(0); 
+                // Move the pointer to the next voice, wrapping back to 0 if it hits the limit
+                next_voice = (next_voice + 1) % NUM_VOICES;
+                
+                LedOn(0); 
+            }
         }
 
         // --- AUDIO PLAYBACK & MIXING ---
@@ -136,7 +141,8 @@ public:
             // 4. GAIN STAGING & CLAMPING
             // Because we are adding up to 4 samples together, the volume could be 4x too loud.
             // A simple approach is to attenuate the master mix slightly. 
-            mixed_sample = mixed_sample >> 1;
+            // Fix: Replaced >> 1 with / 2 to prevent signed bit-shifting bugs
+            mixed_sample = mixed_sample / 2;
 
             // Hard clip to ensure we absolutely never exceed 16-bit limits
             if (mixed_sample > INT16_MAX) mixed_sample = INT16_MAX;
