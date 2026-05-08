@@ -85,10 +85,10 @@
 - Switch
     - Up: 
         - Loop the current sample, to explore the map live
-        - alt mode controls: Sample VCA, Envelope AR, Voice number?
+        - [x] alt mode controls: Sample VCA, Envelope AR, Voice number?
     - Middle: live mode, sample is triggered when PulseIn1 receives a trigger
     - Down:
-        - Ratchet
+        - [x] Ratchet
         - Reverse
         - Downsample
 - Main knob
@@ -101,7 +101,7 @@
     - Envelope Following
 
 ### Output ideas
-- PulseOut1: Gate
+- PulseOut1: 
 - PulseOut2: End of sample trigger 
     - patch back into clock for advancing to next sample!
 - CV outs:
@@ -116,7 +116,7 @@
     - Haas Effect: Short delay by 500 - 1000 samples for fat stereo sound
 
 ## Improvement ideas
-- [ ] Internal VCA & Envelope to remove any clicking
+- [x] Internal VCA & Envelope to remove any clicking
 - Slew Limiting (Glide) on the Coordinates
 - Variable Pitch
 - [x] Coordinate "Sample and Hold"
