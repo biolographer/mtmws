@@ -5,6 +5,11 @@
 constexpr int DOWNSAMPLE_FACTOR = 2; 
 constexpr int NUM_VOICES = 4; 
 
+// --- DELAY LINE MEMORY ---
+// 48000 samples = exactly 1 second of delay time at 48kHz
+constexpr uint32_t DELAY_BUFFER_SIZE = 48000; 
+int16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
+
 enum EnvState { OFF, ATTACK, DECAY };
 
 struct Voice {
@@ -22,22 +27,24 @@ private:
     Voice voices[NUM_VOICES];
     int next_voice = 0; 
 
-    // --- NAVIGATION VARIABLES ---
+    // Delay variables
+    uint32_t delay_ptr = 0;
+    // (Removed the hardcoded DELAY_TIME, it is now calculated dynamically)
+
     int32_t held_x = 0;
     int32_t held_y = 0;
     int32_t base_x = 2048; 
     int32_t base_y = 2048;
     int32_t spread = 0; 
 
-    // --- UI PAGE VARIABLES ---
     int32_t secondary_param_x = 0; 
     int32_t secondary_param_y = 0;
-    int32_t secondary_param_main = 0;
+    // This now strictly controls Delay Time!
+    int32_t secondary_param_main = 0; 
     
-    // --- RATCHET STATE VARIABLES ---
-    int32_t secondary_param_ratchet = 2048; // Controlled by Main knob when switch is Down
-    int32_t last_played_target = -1;        // Remembers the last sample triggered
-    uint32_t ratchet_counter = 48000;       // Timer for the stutter effect
+    int32_t secondary_param_ratchet = 2048; 
+    int32_t last_played_target = -1;        
+    uint32_t ratchet_counter = 48000;       
 
     inline int find_nearest_sample(int32_t target_x, int32_t target_y) {
         if (NUM_SAMPLES <= 0) return -1;
@@ -59,18 +66,14 @@ public:
     void ProcessSample() override {
         // --- 1. UI PAGING LOGIC ---
         if (SwitchUp()) {
-            // PAGE 2: Envelope controls
             secondary_param_x = PotX(); 
             secondary_param_y = PotY(); 
-            secondary_param_main = PotMain();
+            secondary_param_main = PotMain(); // Delay Time
         } 
         else if (SwitchDown()) {
-            // PAGE 3: Ratchet controls (Momentary)
-            // Use the Main Knob to control how fast the ratchet repeats
             secondary_param_ratchet = PotMain(); 
         }
         else { 
-            // PAGE 1: Navigation
             base_x = PotX();
             base_y = PotY();
             spread = PotMain(); 
@@ -80,7 +83,6 @@ public:
         bool fire_voice = false;
         int target_to_play = -1;
 
-        // Condition A: External Pulse Input
         if (PulseIn1RisingEdge()) {
             int32_t cv_mod_x = (CVIn1() * spread) / 4096;
             int32_t cv_mod_y = (CVIn2() * spread) / 4096;
@@ -97,28 +99,21 @@ public:
             target_to_play = find_nearest_sample(held_x, held_y);
 
             if (target_to_play >= 0) {
-                last_played_target = target_to_play; // Memorize this sample for the ratchet!
+                last_played_target = target_to_play; 
                 fire_voice = true;
             }
         }
 
-        // Condition B: The Ratchet Switch
         if (SwitchDown() && last_played_target >= 0) {
             ratchet_counter++;
-            
-            // Map the Main Pot (0 to 4095) to a time interval.
-            // Max pot (4095) = 1000 samples (super fast, ~48Hz stutter)
-            // Min pot (0) = 21475 samples (slow, ~2Hz repeat)
             uint32_t ratchet_interval = 1000 + ((4095 - secondary_param_ratchet) * 5);
 
             if (ratchet_counter >= ratchet_interval) {
                 target_to_play = last_played_target;
                 fire_voice = true;
-                ratchet_counter = 0; // Reset timer for the next repeat
+                ratchet_counter = 0; 
             }
         } else {
-            // If the switch isn't pressed, keep the counter artificially high.
-            // This guarantees the very first repeat fires instantly when you press the switch!
             ratchet_counter = 48000; 
         }
 
@@ -136,7 +131,7 @@ public:
             LedOn(0); 
         }
 
-        // --- 4. AUDIO PLAYBACK & MIXING ---
+        // --- 4. DRY AUDIO PLAYBACK & MIXING ---
         int32_t mixed_sample = 0; 
         bool anything_playing = false;
 
@@ -184,19 +179,42 @@ public:
             }
         }
 
+        // Prepare the safe, hard-clipped Dry Sample
+        int32_t dry_sample = 0;
         if (anything_playing) {
-            mixed_sample = mixed_sample / 2;
-
+            mixed_sample = mixed_sample / 2; // Headroom
             if (mixed_sample > INT16_MAX) mixed_sample = INT16_MAX;
             if (mixed_sample < INT16_MIN) mixed_sample = INT16_MIN;
-
-            AudioOut1((int16_t)mixed_sample);
-            AudioOut2((int16_t)mixed_sample);
+            dry_sample = mixed_sample;
         } else {
-            AudioOut1(0);
-            AudioOut2(0);
             LedOff(0);
         }
+
+        // --- 5. THE VARIABLE DELAY LINE ---
+        // Map the Main Knob (0 - 4095) to a delay time in samples (0 - 47999)
+        // If knob is maxed, delay is exactly 1 second.
+        uint32_t current_delay_time = (secondary_param_main * (DELAY_BUFFER_SIZE - 1)) / 4095;
+
+        // Look back in time to read the wet sample
+        uint32_t read_ptr = (delay_ptr + DELAY_BUFFER_SIZE - current_delay_time) % DELAY_BUFFER_SIZE;
+        int32_t wet_sample = delay_buffer[read_ptr];
+        
+        // Write current dry audio into the buffer + ~60% feedback (5/8 math trick)
+        int32_t delay_input = dry_sample + ((wet_sample * 5) / 8);
+        
+        // Safety clamp to prevent screeching feedback loop explosions
+        if (delay_input > INT16_MAX) delay_input = INT16_MAX;
+        if (delay_input < INT16_MIN) delay_input = INT16_MIN;
+        delay_buffer[delay_ptr] = (int16_t)delay_input;
+        
+        // Move time forward
+        delay_ptr = (delay_ptr + 1) % DELAY_BUFFER_SIZE;
+
+        // --- 6. DISCRETE OUTPUT ROUTING ---
+        // Out 1 gets strictly the pure, dry hit.
+        // Out 2 gets strictly the delay line.
+        AudioOut1((int16_t)dry_sample);
+        AudioOut2((int16_t)wet_sample);
     }
 };
 

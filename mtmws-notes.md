@@ -86,13 +86,14 @@
     - Up: 
         - Loop the current sample, to explore the map live
         - [x] alt mode controls: Sample VCA, Envelope AR, Voice number?
+            - [x] Delay time
     - Middle: live mode, sample is triggered when PulseIn1 receives a trigger
     - Down:
         - [x] Ratchet
         - Reverse
         - Downsample
 - Main knob
-    - CV attenuation: Magnitude of CV influence on X & Y
+    - [x] CV attenuation: Magnitude of CV influence on X & Y
     - Decay/ Grain size, affect `current_sample_length`
 - PulseIN2
     - Choke: momentarily stop playback, `is_playing = false``
@@ -114,6 +115,8 @@
     - Reflect X&Y at the axis or origin?
     - Spatial panning: As you navigate the corpus with knob and CV, audio physically moves around the room
     - Haas Effect: Short delay by 500 - 1000 samples for fat stereo sound
+    - "Nearest Neighbor" Layering
+    - Delay
 
 ## Improvement ideas
 - [x] Internal VCA & Envelope to remove any clicking
