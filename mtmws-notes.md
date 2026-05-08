@@ -128,6 +128,13 @@
 - Audio Crossfading between multiple neighboring samples
     - neighborhood can be precomputed
 - [x] Add voices for overlapping samples
+- Embeddings for better spread in space:
+    - [x] Centroid (Brightness) to X, and RMS/Energy (Loudness) or Spectral Flatness (Noisiness/Pitchiness) to Y
+    - tSNE with MFCCs from Librosa
+    - Neural Network embedding
+- preprocessing:
+    - [x] Anti-aliasing: `scipy.signal.decimate` instead of subsampling
+    - [x] 16 bit audio 
 
 ---
 
