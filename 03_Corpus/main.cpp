@@ -5,7 +5,6 @@
 constexpr int DOWNSAMPLE_FACTOR = 2; 
 constexpr int NUM_VOICES = 4; 
 
-// --- DELAY LINE MEMORY ---
 // 48000 samples = exactly 1 second of delay time at 48kHz
 constexpr uint32_t DELAY_BUFFER_SIZE = 48000; 
 int16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
@@ -27,9 +26,7 @@ private:
     Voice voices[NUM_VOICES];
     int next_voice = 0; 
 
-    // Delay variables
     uint32_t delay_ptr = 0;
-    // (Removed the hardcoded DELAY_TIME, it is now calculated dynamically)
 
     int32_t held_x = 0;
     int32_t held_y = 0;
@@ -39,12 +36,14 @@ private:
 
     int32_t secondary_param_x = 0; 
     int32_t secondary_param_y = 0;
-    // This now strictly controls Delay Time!
     int32_t secondary_param_main = 0; 
     
     int32_t secondary_param_ratchet = 2048; 
     int32_t last_played_target = -1;        
     uint32_t ratchet_counter = 48000;       
+
+    // --- NEW: End Of Sample (EOS) Timer ---
+    uint32_t eos_timer = 0;
 
     inline int find_nearest_sample(int32_t target_x, int32_t target_y) {
         if (NUM_SAMPLES <= 0) return -1;
@@ -68,7 +67,7 @@ public:
         if (SwitchUp()) {
             secondary_param_x = PotX(); 
             secondary_param_y = PotY(); 
-            secondary_param_main = PotMain(); // Delay Time
+            secondary_param_main = PotMain(); 
         } 
         else if (SwitchDown()) {
             secondary_param_ratchet = PotMain(); 
@@ -104,16 +103,36 @@ public:
             }
         }
 
-        if (SwitchDown() && last_played_target >= 0) {
-            ratchet_counter++;
-            uint32_t ratchet_interval = 1000 + ((4095 - secondary_param_ratchet) * 5);
+        // --- Condition B: The Ratchet & Auto-Start Switch ---
+        if (SwitchDown()) {
+            
+            // THE AUTO-START: If the module just booted and nothing has played yet
+            if (last_played_target < 0) {
+                // Grab the current base knob positions to find our first sample
+                held_x = base_x;
+                held_y = base_y;
+                target_to_play = find_nearest_sample(held_x, held_y);
+                
+                if (target_to_play >= 0) {
+                    last_played_target = target_to_play; // Memorize it!
+                    fire_voice = true;
+                    ratchet_counter = 0; // Reset timer so ratchet can begin
+                }
+            } 
+            // THE RATCHET: A sample has played before, do the normal stutter
+            else {
+                ratchet_counter++;
+                uint32_t ratchet_interval = 1000 + ((4095 - secondary_param_ratchet) * 5);
 
-            if (ratchet_counter >= ratchet_interval) {
-                target_to_play = last_played_target;
-                fire_voice = true;
-                ratchet_counter = 0; 
+                if (ratchet_counter >= ratchet_interval) {
+                    target_to_play = last_played_target;
+                    fire_voice = true;
+                    ratchet_counter = 0; 
+                }
             }
+            
         } else {
+            // Switch is not held down
             ratchet_counter = 48000; 
         }
 
@@ -160,6 +179,7 @@ public:
                         if (voices[i].env_level <= 0) {
                             voices[i].env_level = 0;
                             voices[i].is_playing = false; 
+                            eos_timer = 480; // Trigger EOS! (Envelope naturally finished)
                         }
                     }
 
@@ -175,11 +195,25 @@ public:
                     voices[i].playhead++; 
                 } else {
                     voices[i].is_playing = false; 
+                    eos_timer = 480; // Trigger EOS! (Ran out of sample data)
                 }
             }
         }
 
-        // Prepare the safe, hard-clipped Dry Sample
+        // --- 5. THE OUTPUTS (Gate & Triggers) ---
+        
+        // Gate Out: HIGH if any sound is currently being generated.
+        PulseOut1(anything_playing); 
+
+        // EOS Trigger Out: Stays HIGH for 480 samples (~10ms) when a voice ends.
+        if (eos_timer > 0) {
+            PulseOut2(true);
+            eos_timer--;
+        } else {
+            PulseOut2(false);
+        }
+
+        // --- 6. AUDIO GAIN STAGING ---
         int32_t dry_sample = 0;
         if (anything_playing) {
             mixed_sample = mixed_sample / 2; // Headroom
@@ -190,29 +224,20 @@ public:
             LedOff(0);
         }
 
-        // --- 5. THE VARIABLE DELAY LINE ---
-        // Map the Main Knob (0 - 4095) to a delay time in samples (0 - 47999)
-        // If knob is maxed, delay is exactly 1 second.
+        // --- 7. THE VARIABLE DELAY LINE ---
         uint32_t current_delay_time = (secondary_param_main * (DELAY_BUFFER_SIZE - 1)) / 4095;
-
-        // Look back in time to read the wet sample
         uint32_t read_ptr = (delay_ptr + DELAY_BUFFER_SIZE - current_delay_time) % DELAY_BUFFER_SIZE;
         int32_t wet_sample = delay_buffer[read_ptr];
         
-        // Write current dry audio into the buffer + ~60% feedback (5/8 math trick)
         int32_t delay_input = dry_sample + ((wet_sample * 5) / 8);
         
-        // Safety clamp to prevent screeching feedback loop explosions
         if (delay_input > INT16_MAX) delay_input = INT16_MAX;
         if (delay_input < INT16_MIN) delay_input = INT16_MIN;
         delay_buffer[delay_ptr] = (int16_t)delay_input;
         
-        // Move time forward
         delay_ptr = (delay_ptr + 1) % DELAY_BUFFER_SIZE;
 
-        // --- 6. DISCRETE OUTPUT ROUTING ---
-        // Out 1 gets strictly the pure, dry hit.
-        // Out 2 gets strictly the delay line.
+        // --- 8. AUDIO ROUTING ---
         AudioOut1((int16_t)dry_sample);
         AudioOut2((int16_t)wet_sample);
     }
