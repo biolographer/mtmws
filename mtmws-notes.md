@@ -114,15 +114,14 @@
     - Haas Effect: Short delay by 500 - 1000 samples for fat stereo sound
 
 ## Improvement ideas
-- Internal VCA & Envelope to remove any clicking
+- [ ] Internal VCA & Envelope to remove any clicking
 - Slew Limiting (Glide) on the Coordinates
 - Variable Pitch
-- [ ] Coordinate "Sample and Hold"
+- [x] Coordinate "Sample and Hold"
     - feeding a continuous LFO into the X/Y inputs, the module might constantly select new samples in the middle of playback, leading to chaotic noise.
     - The Fix: Only allow the module to read the X/Y knobs and CV inputs at the exact moment a trigger is received on Pulse 1.
 - Audio Crossfading between multiple neighboring samples
     - neighborhood can be precomputed
-- 
 
 ---
 

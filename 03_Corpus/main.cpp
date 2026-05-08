@@ -15,9 +15,12 @@ private:
     uint32_t playhead = 0;
     bool is_playing = false;
 
-    // Marked 'inline' to avoid function-call overhead inside the fast audio interrupt
-    inline int find_nearest_sample(int32_t cv_x, int32_t cv_y) {
-        // Safety guard: if no samples exist, just return index 0
+    // --- SAMPLE & HOLD STATE VARIABLES ---
+    // We store these here so they stay locked until the next trigger.
+    int32_t held_x = 0;
+    int32_t held_y = 0;
+
+    inline int find_nearest_sample(int32_t target_x, int32_t target_y) {
         if (NUM_SAMPLES <= 0) return 0;
 
         int best_index = 0;
@@ -26,11 +29,9 @@ private:
         int32_t min_dist_sq = INT32_MAX; 
 
         for (int i = 0; i < NUM_SAMPLES; i++) {
-            // Calculate distance without floating point math
-            int32_t dx = cv_x - corpus[i].x;
-            int32_t dy = cv_y - corpus[i].y;
+            int32_t dx = target_x - corpus[i].x;
+            int32_t dy = target_y - corpus[i].y;
             
-            // We don't need std::sqrt(), comparing squared distances works perfectly
             int32_t dist_sq = (dx * dx) + (dy * dy);
             
             if (dist_sq < min_dist_sq) {
@@ -44,13 +45,16 @@ private:
 public:
     void ProcessSample() override {
         
-        // 1. TRIGGER LOGIC
+        // 1. TRIGGER & SAMPLE-AND-HOLD LOGIC
         if (PulseIn1RisingEdge()) {
-            // CVIn returns int16_t (-2048 to 2047). Promoted safely to int32_t.
-            int32_t current_x = CVIn1(); 
-            int32_t current_y = CVIn2();
             
-            int target = find_nearest_sample(current_x, current_y);
+            // SAMPLE: Read the Pots AND the CV inputs at this exact moment.
+            // (Assuming PotX/Y and CVIn return compatible ranges, e.g., 12-bit or 16-bit)
+            held_x = PotX() + CVIn1(); 
+            held_y = PotY() + CVIn2();
+            
+            // Find the sample based on our newly locked coordinates
+            int target = find_nearest_sample(held_x, held_y);
 
             current_sample_data = corpus[target].data;
             current_sample_length = corpus[target].length;
@@ -72,7 +76,7 @@ public:
                 AudioOut1(sample_val);
                 AudioOut2(sample_val);
                 
-                playhead++; // The playhead ALWAYS moves at 48kHz
+                playhead++; 
                 
             } else {
                 // End of sample
@@ -96,6 +100,5 @@ int main() {
     // Run() initializes the hardware and starts the infinite DMA loop.
     // The program will never execute past this line.
     moduleProgram.Run(); 
-    
     return 0;
 }
