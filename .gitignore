@@ -45,6 +45,9 @@
 !01_Jux/build/*.uf2
 02_GBS/build/*
 !02_GBS/build/*.uf2
+03_Atlas/build/*
+!03_Atlas/build/*.uf2
+
 
 # CMake generated files
 CMakeFiles/
@@ -72,7 +75,7 @@ Testing/
 
 pico-sdk
 .DS_Store
-03_Corpus/samples/*
+03_Atlas/samples/*.wav
 
 test
 
