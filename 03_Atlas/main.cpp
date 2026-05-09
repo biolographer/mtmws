@@ -64,18 +64,19 @@ private:
 public:
     void ProcessSample() override {
         // --- 1. UI PAGING LOGIC ---
-        if (SwitchUp()) {
-            secondary_param_x = PotX(); 
-            secondary_param_y = PotY(); 
-            secondary_param_main = PotMain(); 
+        // Changed to use SwitchVal() and KnobVal()
+        if (SwitchVal() == Switch::Up) {
+            secondary_param_x = KnobVal(Knob::X); 
+            secondary_param_y = KnobVal(Knob::Y); 
+            secondary_param_main = KnobVal(Knob::Main); 
         } 
-        else if (SwitchDown()) {
-            secondary_param_ratchet = PotMain(); 
+        else if (SwitchVal() == Switch::Down) {
+            secondary_param_ratchet = KnobVal(Knob::Main); 
         }
         else { 
-            base_x = PotX();
-            base_y = PotY();
-            spread = PotMain(); 
+            base_x = KnobVal(Knob::X);
+            base_y = KnobVal(Knob::Y);
+            spread = KnobVal(Knob::Main); 
         }
         
         // --- 2. TRIGGER LOGIC ---
@@ -104,7 +105,8 @@ public:
         }
 
         // --- Condition B: The Ratchet & Auto-Start Switch ---
-        if (SwitchDown()) {
+        // Changed to use SwitchVal()
+        if (SwitchVal() == Switch::Down) {
             
             // THE AUTO-START: If the module just booted and nothing has played yet
             if (last_played_target < 0) {
