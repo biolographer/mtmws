@@ -75,7 +75,7 @@ Testing/
 
 pico-sdk
 .DS_Store
-03_Atlas/samples/*.wav
+03_Atlas/samples/*
 
 test
 

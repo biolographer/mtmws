@@ -140,5 +140,6 @@
 - [ ] in Z up it the main knob seems to have an influence on x and y
 - [ ] main knob doesn't seem to attenuate CV modulation to 0
 - [ ] envleope knobs don't work reliably
+- [ ] only plays the very beginning of longer samples
 ---
 
