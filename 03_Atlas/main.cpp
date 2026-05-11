@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdlib> // For abs()
 #include "ComputerCard.h"
 #include "corpus_data.h"
 
@@ -9,7 +10,6 @@ constexpr int NUM_VOICES = 4;
 constexpr uint32_t DELAY_BUFFER_SIZE = 48000; 
 int16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
 
-// --- UPDATED: Added HOLD state ---
 enum EnvState { OFF, ATTACK, HOLD, DECAY };
 
 struct Voice {
@@ -29,8 +29,7 @@ private:
 
     uint32_t delay_ptr = 0;
 
-    int32_t held_x = 0;
-    int32_t held_y = 0;
+    // --- Core Parameters ---
     int32_t base_x = 2048; 
     int32_t base_y = 2048;
     int32_t spread = 0; 
@@ -40,11 +39,34 @@ private:
     int32_t secondary_param_main = 0; 
     
     int32_t secondary_param_ratchet = 2048; 
+
+    // --- UI State Tracking (Soft Takeover) ---
+    Switch last_switch_state = Switch::Center;
+    bool x_knob_active = false;
+    bool y_knob_active = false;
+    bool main_knob_active = false;
+    const int32_t TAKEOVER_THRESHOLD = 100; 
+
+    // --- Playback State ---
+    int32_t held_x = 0;
+    int32_t held_y = 0;
     int32_t last_played_target = -1;        
     uint32_t ratchet_counter = 48000;       
-
-    // End Of Sample (EOS) Timer
     uint32_t eos_timer = 0;
+
+    // Helper for Soft Takeover
+    void UpdateParam(int32_t& stored_param, Knob knob, bool& is_active) {
+        int32_t physical_pos = KnobVal(knob);
+        if (!is_active) {
+            // Check if user has "picked up" the value by moving physical knob close to stored value
+            if (std::abs(physical_pos - stored_param) < TAKEOVER_THRESHOLD) {
+                is_active = true;
+            }
+        }
+        if (is_active) {
+            stored_param = physical_pos;
+        }
+    }
 
     inline int find_nearest_sample(int32_t target_x, int32_t target_y) {
         if (NUM_SAMPLES <= 0) return -1;
@@ -64,41 +86,40 @@ private:
 
 public:
     void ProcessSample() override {
-        // --- 1. STATE CONSISTENCY FIX ---
-        // Read the hardware switch exactly once per sample to avoid race 
-        // conditions caused by switch bounce or ADC voltage sags.
+        // 1. Consistency: Read switch once
         Switch current_switch = SwitchVal();
 
-        // --- 2. UI PAGING LOGIC ---
+        // 2. Soft Takeover: Reset activation on page change
+        if (current_switch != last_switch_state) {
+            x_knob_active = false;
+            y_knob_active = false;
+            main_knob_active = false;
+            last_switch_state = current_switch;
+        }
+
+        // 3. UI Paging
         if (current_switch == Switch::Up) {
-            secondary_param_x = KnobVal(Knob::X); 
-            secondary_param_y = KnobVal(Knob::Y); 
-            secondary_param_main = KnobVal(Knob::Main); 
+            UpdateParam(secondary_param_x, Knob::X, x_knob_active);
+            UpdateParam(secondary_param_y, Knob::Y, y_knob_active);
+            UpdateParam(secondary_param_main, Knob::Main, main_knob_active);
         } 
         else if (current_switch == Switch::Down) {
-            secondary_param_ratchet = KnobVal(Knob::Main); 
+            UpdateParam(secondary_param_ratchet, Knob::Main, main_knob_active);
         }
         else { 
-            base_x = KnobVal(Knob::X);
-            base_y = KnobVal(Knob::Y);
-            spread = KnobVal(Knob::Main); 
+            UpdateParam(base_x, Knob::X, x_knob_active);
+            UpdateParam(base_y, Knob::Y, y_knob_active);
+            UpdateParam(spread, Knob::Main, main_knob_active);
         }
         
-        // --- 3. TRIGGER LOGIC ---
+        // 4. Trigger Logic (with Deadzone and Safe Modulo)
         bool fire_voice = false;
         int target_to_play = -1;
 
         if (PulseIn1RisingEdge()) {
-            
-            // --- FIX: Add a hardware deadzone to the spread parameter ---
-            // If the knob is in the bottom ~1.5% of its travel, force it to absolute zero 
-            // so CV modulation is completely muted.
-            int32_t deadzoned_spread = spread;
-            if (deadzoned_spread < 60) {
-                deadzoned_spread = 0;
-            }
+            // Hardware Deadzone for spread knob
+            int32_t deadzoned_spread = (spread < 60) ? 0 : spread;
 
-            // Apply the deadzoned spread to the incoming CV
             int32_t cv_mod_x = (CVIn1() * deadzoned_spread) / 4096;
             int32_t cv_mod_y = (CVIn2() * deadzoned_spread) / 4096;
             
@@ -106,78 +127,61 @@ public:
             held_y = base_y + cv_mod_y;
 
             constexpr int32_t MAP_MAX = 4096;
-            
-            // O(1) Safe Modulo Wrapping
+            // O(1) Wrap Fix
             held_x = (held_x % MAP_MAX + MAP_MAX) % MAP_MAX;
             held_y = (held_y % MAP_MAX + MAP_MAX) % MAP_MAX;
 
             target_to_play = find_nearest_sample(held_x, held_y);
-
             if (target_to_play >= 0) {
                 last_played_target = target_to_play; 
                 fire_voice = true;
             }
         }
 
-        // --- Condition B: The Ratchet & Auto-Start Switch ---
-        // Use the locked state variable here as well!
+        // 5. Ratchet Logic (with Clamping)
         if (current_switch == Switch::Down) {
-            
-            // THE AUTO-START: If the module just booted and nothing has played yet
             if (last_played_target < 0) {
                 held_x = base_x;
                 held_y = base_y;
                 target_to_play = find_nearest_sample(held_x, held_y);
-                
                 if (target_to_play >= 0) {
                     last_played_target = target_to_play; 
                     fire_voice = true;
                     ratchet_counter = 0; 
                 }
             } 
-            // THE RATCHET: A sample has played before, do the normal stutter
             else {
                 ratchet_counter++;
-                
-                // --- FIX: Clamp the ADC value so it cannot exceed 4095 and underflow ---
-                int32_t safe_ratchet = secondary_param_ratchet;
-                if (safe_ratchet > 4095) safe_ratchet = 4095;
-                if (safe_ratchet < 0) safe_ratchet = 0;
-                
+                int32_t safe_ratchet = (secondary_param_ratchet > 4095) ? 4095 : secondary_param_ratchet;
                 uint32_t ratchet_interval = 1000 + ((4095 - safe_ratchet) * 5);
-
                 if (ratchet_counter >= ratchet_interval) {
                     target_to_play = last_played_target;
                     fire_voice = true;
                     ratchet_counter = 0; 
                 }
             }
-            
         } else {
             ratchet_counter = 48000; 
         }
 
-        // --- 4. VOICE ALLOCATION ---
+        // 6. Voice Allocation
         if (fire_voice && target_to_play >= 0) {
             voices[next_voice].data = corpus[target_to_play].data;
             voices[next_voice].length = corpus[target_to_play].length;
             voices[next_voice].playhead = 0;
             voices[next_voice].is_playing = true;
-            
             voices[next_voice].env_state = ATTACK;
             voices[next_voice].env_level = 0; 
-
             next_voice = (next_voice + 1) % NUM_VOICES;
             LedOn(0); 
         }
 
-        // --- 5. DRY AUDIO PLAYBACK & MIXING ---
+        // 7. Audio Processing & Mixing
         int32_t mixed_sample = 0; 
         bool anything_playing = false;
 
         int32_t attack_step = 4096 - secondary_param_x; 
         if (attack_step < 1) attack_step = 1;
-        
         int32_t decay_step = (4096 - secondary_param_y) / 2; 
         if (decay_step < 1) decay_step = 1;
 
@@ -187,7 +191,6 @@ public:
                 uint32_t flash_index = voices[i].playhead / DOWNSAMPLE_FACTOR;
                 
                 if (flash_index < voices[i].length) {
-                    
                     if (voices[i].env_state == ATTACK) {
                         voices[i].env_level += attack_step;
                         if (voices[i].env_level >= 65535) {
@@ -198,10 +201,7 @@ public:
                     else if (voices[i].env_state == HOLD) {
                         uint32_t decay_cycles_needed = 65535 / decay_step;
                         uint32_t cycles_remaining = (voices[i].length - flash_index) * DOWNSAMPLE_FACTOR;
-                        
-                        if (cycles_remaining <= decay_cycles_needed) {
-                            voices[i].env_state = DECAY;
-                        }
+                        if (cycles_remaining <= decay_cycles_needed) voices[i].env_state = DECAY;
                     }
                     else if (voices[i].env_state == DECAY) {
                         voices[i].env_level -= decay_step;
@@ -219,7 +219,6 @@ public:
 
                     int32_t raw_sample = voices[i].data[flash_index];
                     int32_t enveloped_sample = (raw_sample * (voices[i].env_level >> 1)) >> 15;
-                    
                     mixed_sample += enveloped_sample;
                     voices[i].playhead++; 
                 } else {
@@ -229,9 +228,8 @@ public:
             }
         }
 
-        // --- 6. THE OUTPUTS (Gate & Triggers) ---
+        // 8. Outputs & Gain
         PulseOut1(anything_playing); 
-
         if (eos_timer > 0) {
             PulseOut2(true);
             eos_timer--;
@@ -239,7 +237,6 @@ public:
             PulseOut2(false);
         }
 
-        // --- 7. AUDIO GAIN STAGING ---
         int32_t dry_sample = 0;
         if (anything_playing) {
             mixed_sample = mixed_sample / 2; 
@@ -250,13 +247,8 @@ public:
             LedOff(0);
         }
 
-        // --- 8. THE VARIABLE DELAY LINE ---
-        // Clamp secondary_param_main to strictly <= 4095 to prevent 
-        // a negative modulo and out-of-bounds memory read if the ADC spikes.
-        int32_t safe_main = secondary_param_main;
-        if (safe_main > 4095) safe_main = 4095;
-        if (safe_main < 0) safe_main = 0;
-
+        // 9. Delay (with Clamp)
+        int32_t safe_main = (secondary_param_main > 4095) ? 4095 : secondary_param_main;
         uint32_t current_delay_time = (safe_main * (DELAY_BUFFER_SIZE - 1)) / 4095;
         uint32_t read_ptr = (delay_ptr + DELAY_BUFFER_SIZE - current_delay_time) % DELAY_BUFFER_SIZE;
         
@@ -266,10 +258,8 @@ public:
         if (delay_input > INT16_MAX) delay_input = INT16_MAX;
         if (delay_input < INT16_MIN) delay_input = INT16_MIN;
         delay_buffer[delay_ptr] = (int16_t)delay_input;
-        
         delay_ptr = (delay_ptr + 1) % DELAY_BUFFER_SIZE;
 
-        // --- 9. AUDIO ROUTING ---
         AudioOut1((int16_t)dry_sample);
         AudioOut2((int16_t)wet_sample);
     }
