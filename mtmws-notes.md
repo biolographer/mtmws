@@ -137,9 +137,10 @@
     - [x] 16 bit audio 
 - [ ] sometimes seems to get stuck
     - [ ] repeats same sample over again and knobs and switch have no influence
-- [ ] in Z up it the main knob seems to have an influence on x and y
+- [x] in Z up it the main knob seems to have an influence on x and y
 - [ ] main knob doesn't seem to attenuate CV modulation to 0
 - [ ] envleope knobs don't work reliably
-- [ ] only plays the very beginning of longer samples
+- [x] only plays the very beginning of longer samples
+    - envelope was configured wrongly
 ---
 

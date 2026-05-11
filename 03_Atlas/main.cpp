@@ -64,13 +64,18 @@ private:
 
 public:
     void ProcessSample() override {
-        // --- 1. UI PAGING LOGIC ---
-        if (SwitchVal() == Switch::Up) {
+        // --- 1. STATE CONSISTENCY FIX ---
+        // Read the hardware switch exactly once per sample to avoid race 
+        // conditions caused by switch bounce or ADC voltage sags.
+        Switch current_switch = SwitchVal();
+
+        // --- 2. UI PAGING LOGIC ---
+        if (current_switch == Switch::Up) {
             secondary_param_x = KnobVal(Knob::X); 
             secondary_param_y = KnobVal(Knob::Y); 
             secondary_param_main = KnobVal(Knob::Main); 
         } 
-        else if (SwitchVal() == Switch::Down) {
+        else if (current_switch == Switch::Down) {
             secondary_param_ratchet = KnobVal(Knob::Main); 
         }
         else { 
@@ -79,7 +84,7 @@ public:
             spread = KnobVal(Knob::Main); 
         }
         
-        // --- 2. TRIGGER LOGIC ---
+        // --- 3. TRIGGER LOGIC ---
         bool fire_voice = false;
         int target_to_play = -1;
 
@@ -105,19 +110,19 @@ public:
         }
 
         // --- Condition B: The Ratchet & Auto-Start Switch ---
-        if (SwitchVal() == Switch::Down) {
+        // Use the locked state variable here as well!
+        if (current_switch == Switch::Down) {
             
             // THE AUTO-START: If the module just booted and nothing has played yet
             if (last_played_target < 0) {
-                // Grab the current base knob positions to find our first sample
                 held_x = base_x;
                 held_y = base_y;
                 target_to_play = find_nearest_sample(held_x, held_y);
                 
                 if (target_to_play >= 0) {
-                    last_played_target = target_to_play; // Memorize it!
+                    last_played_target = target_to_play; 
                     fire_voice = true;
-                    ratchet_counter = 0; // Reset timer so ratchet can begin
+                    ratchet_counter = 0; 
                 }
             } 
             // THE RATCHET: A sample has played before, do the normal stutter
@@ -133,11 +138,10 @@ public:
             }
             
         } else {
-            // Switch is not held down
             ratchet_counter = 48000; 
         }
 
-        // --- 3. VOICE ALLOCATION ---
+        // --- 4. VOICE ALLOCATION ---
         if (fire_voice && target_to_play >= 0) {
             voices[next_voice].data = corpus[target_to_play].data;
             voices[next_voice].length = corpus[target_to_play].length;
@@ -151,7 +155,7 @@ public:
             LedOn(0); 
         }
 
-        // --- 4. DRY AUDIO PLAYBACK & MIXING ---
+        // --- 5. DRY AUDIO PLAYBACK & MIXING ---
         int32_t mixed_sample = 0; 
         bool anything_playing = false;
 
@@ -168,22 +172,17 @@ public:
                 
                 if (flash_index < voices[i].length) {
                     
-                    // --- UPDATED ENVELOPE LOGIC ---
                     if (voices[i].env_state == ATTACK) {
                         voices[i].env_level += attack_step;
                         if (voices[i].env_level >= 65535) {
                             voices[i].env_level = 65535; 
-                            voices[i].env_state = HOLD; // Transition to HOLD
+                            voices[i].env_state = HOLD; 
                         }
                     } 
                     else if (voices[i].env_state == HOLD) {
-                        // Calculate DSP cycles needed to fully decay based on knob position
                         uint32_t decay_cycles_needed = 65535 / decay_step;
-                        
-                        // Calculate real-time DSP cycles remaining in this specific sample
                         uint32_t cycles_remaining = (voices[i].length - flash_index) * DOWNSAMPLE_FACTOR;
                         
-                        // Trigger DECAY so it hits 0 precisely as the sample ends
                         if (cycles_remaining <= decay_cycles_needed) {
                             voices[i].env_state = DECAY;
                         }
@@ -193,11 +192,10 @@ public:
                         if (voices[i].env_level <= 0) {
                             voices[i].env_level = 0;
                             voices[i].is_playing = false; 
-                            eos_timer = 480; // Trigger EOS! (Envelope naturally finished)
+                            eos_timer = 480; 
                         }
                     }
 
-                    // Failsafe for short samples to prevent clicks
                     uint32_t samples_left = voices[i].length - flash_index;
                     if (samples_left < 256) {
                         voices[i].env_level = (voices[i].env_level * samples_left) / 256;
@@ -210,17 +208,14 @@ public:
                     voices[i].playhead++; 
                 } else {
                     voices[i].is_playing = false; 
-                    eos_timer = 480; // Trigger EOS! (Ran out of sample data)
+                    eos_timer = 480; 
                 }
             }
         }
 
-        // --- 5. THE OUTPUTS (Gate & Triggers) ---
-        
-        // Gate Out: HIGH if any sound is currently being generated.
+        // --- 6. THE OUTPUTS (Gate & Triggers) ---
         PulseOut1(anything_playing); 
 
-        // EOS Trigger Out: Stays HIGH for 480 samples (~10ms) when a voice ends.
         if (eos_timer > 0) {
             PulseOut2(true);
             eos_timer--;
@@ -228,10 +223,10 @@ public:
             PulseOut2(false);
         }
 
-        // --- 6. AUDIO GAIN STAGING ---
+        // --- 7. AUDIO GAIN STAGING ---
         int32_t dry_sample = 0;
         if (anything_playing) {
-            mixed_sample = mixed_sample / 2; // Headroom
+            mixed_sample = mixed_sample / 2; 
             if (mixed_sample > INT16_MAX) mixed_sample = INT16_MAX;
             if (mixed_sample < INT16_MIN) mixed_sample = INT16_MIN;
             dry_sample = mixed_sample;
@@ -239,11 +234,17 @@ public:
             LedOff(0);
         }
 
-        // --- 7. THE VARIABLE DELAY LINE ---
-        uint32_t current_delay_time = (secondary_param_main * (DELAY_BUFFER_SIZE - 1)) / 4095;
+        // --- 8. THE VARIABLE DELAY LINE ---
+        // Clamp secondary_param_main to strictly <= 4095 to prevent 
+        // a negative modulo and out-of-bounds memory read if the ADC spikes.
+        int32_t safe_main = secondary_param_main;
+        if (safe_main > 4095) safe_main = 4095;
+        if (safe_main < 0) safe_main = 0;
+
+        uint32_t current_delay_time = (safe_main * (DELAY_BUFFER_SIZE - 1)) / 4095;
         uint32_t read_ptr = (delay_ptr + DELAY_BUFFER_SIZE - current_delay_time) % DELAY_BUFFER_SIZE;
-        int32_t wet_sample = delay_buffer[read_ptr];
         
+        int32_t wet_sample = delay_buffer[read_ptr];
         int32_t delay_input = dry_sample + ((wet_sample * 5) / 8);
         
         if (delay_input > INT16_MAX) delay_input = INT16_MAX;
@@ -252,7 +253,7 @@ public:
         
         delay_ptr = (delay_ptr + 1) % DELAY_BUFFER_SIZE;
 
-        // --- 8. AUDIO ROUTING ---
+        // --- 9. AUDIO ROUTING ---
         AudioOut1((int16_t)dry_sample);
         AudioOut2((int16_t)wet_sample);
     }
