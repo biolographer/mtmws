@@ -89,17 +89,25 @@ public:
         int target_to_play = -1;
 
         if (PulseIn1RisingEdge()) {
-            int32_t cv_mod_x = (CVIn1() * spread) / 4096;
-            int32_t cv_mod_y = (CVIn2() * spread) / 4096;
+            
+            // --- FIX: Add a hardware deadzone to the spread parameter ---
+            // If the knob is in the bottom ~1.5% of its travel, force it to absolute zero 
+            // so CV modulation is completely muted.
+            int32_t deadzoned_spread = spread;
+            if (deadzoned_spread < 60) {
+                deadzoned_spread = 0;
+            }
+
+            // Apply the deadzoned spread to the incoming CV
+            int32_t cv_mod_x = (CVIn1() * deadzoned_spread) / 4096;
+            int32_t cv_mod_y = (CVIn2() * deadzoned_spread) / 4096;
             
             held_x = base_x + cv_mod_x; 
             held_y = base_y + cv_mod_y;
 
             constexpr int32_t MAP_MAX = 4096;
             
-            // --- FIX: O(1) Safe Modulo Wrapping ---
-            // This safely wraps any integer (positive or massive negative) 
-            // into the 0-4095 range instantly, preventing processor locks.
+            // O(1) Safe Modulo Wrapping
             held_x = (held_x % MAP_MAX + MAP_MAX) % MAP_MAX;
             held_y = (held_y % MAP_MAX + MAP_MAX) % MAP_MAX;
 

@@ -135,10 +135,11 @@
 - preprocessing:
     - [x] Anti-aliasing: `scipy.signal.decimate` instead of subsampling
     - [x] 16 bit audio 
-- [ ] sometimes seems to get stuck
-    - [ ] repeats same sample over again and knobs and switch have no influence
+- [x] sometimes seems to get stuck
+    - [x] repeats same sample over again and knobs and switch have no influence
 - [x] in Z up it the main knob seems to have an influence on x and y
-- [ ] main knob doesn't seem to attenuate CV modulation to 0
+- [x] main knob doesn't seem to attenuate CV modulation to 0
+    - added a dead zone 
 - [ ] envleope knobs don't work reliably
 - [x] only plays the very beginning of longer samples
     - envelope was configured wrongly
