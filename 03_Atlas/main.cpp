@@ -41,7 +41,7 @@ private:
     int32_t secondary_param_ratchet = 2048; 
 
     // --- UI State Tracking (Soft Takeover) ---
-    Switch last_switch_state = Switch::Center;
+    Switch last_switch_state = Switch::Middle;
     bool x_knob_active = false;
     bool y_knob_active = false;
     bool main_knob_active = false;
