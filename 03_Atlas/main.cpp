@@ -9,7 +9,8 @@ constexpr int NUM_VOICES = 4;
 constexpr uint32_t DELAY_BUFFER_SIZE = 48000; 
 int16_t delay_buffer[DELAY_BUFFER_SIZE] = {0};
 
-enum EnvState { OFF, ATTACK, DECAY };
+// --- UPDATED: Added HOLD state ---
+enum EnvState { OFF, ATTACK, HOLD, DECAY };
 
 struct Voice {
     const int16_t* data = nullptr;
@@ -42,7 +43,7 @@ private:
     int32_t last_played_target = -1;        
     uint32_t ratchet_counter = 48000;       
 
-    // --- NEW: End Of Sample (EOS) Timer ---
+    // End Of Sample (EOS) Timer
     uint32_t eos_timer = 0;
 
     inline int find_nearest_sample(int32_t target_x, int32_t target_y) {
@@ -64,7 +65,6 @@ private:
 public:
     void ProcessSample() override {
         // --- 1. UI PAGING LOGIC ---
-        // Changed to use SwitchVal() and KnobVal()
         if (SwitchVal() == Switch::Up) {
             secondary_param_x = KnobVal(Knob::X); 
             secondary_param_y = KnobVal(Knob::Y); 
@@ -105,7 +105,6 @@ public:
         }
 
         // --- Condition B: The Ratchet & Auto-Start Switch ---
-        // Changed to use SwitchVal()
         if (SwitchVal() == Switch::Down) {
             
             // THE AUTO-START: If the module just booted and nothing has played yet
@@ -169,13 +168,26 @@ public:
                 
                 if (flash_index < voices[i].length) {
                     
+                    // --- UPDATED ENVELOPE LOGIC ---
                     if (voices[i].env_state == ATTACK) {
                         voices[i].env_level += attack_step;
                         if (voices[i].env_level >= 65535) {
                             voices[i].env_level = 65535; 
-                            voices[i].env_state = DECAY; 
+                            voices[i].env_state = HOLD; // Transition to HOLD
                         }
                     } 
+                    else if (voices[i].env_state == HOLD) {
+                        // Calculate DSP cycles needed to fully decay based on knob position
+                        uint32_t decay_cycles_needed = 65535 / decay_step;
+                        
+                        // Calculate real-time DSP cycles remaining in this specific sample
+                        uint32_t cycles_remaining = (voices[i].length - flash_index) * DOWNSAMPLE_FACTOR;
+                        
+                        // Trigger DECAY so it hits 0 precisely as the sample ends
+                        if (cycles_remaining <= decay_cycles_needed) {
+                            voices[i].env_state = DECAY;
+                        }
+                    }
                     else if (voices[i].env_state == DECAY) {
                         voices[i].env_level -= decay_step;
                         if (voices[i].env_level <= 0) {
@@ -185,6 +197,7 @@ public:
                         }
                     }
 
+                    // Failsafe for short samples to prevent clicks
                     uint32_t samples_left = voices[i].length - flash_index;
                     if (samples_left < 256) {
                         voices[i].env_level = (voices[i].env_level * samples_left) / 256;
