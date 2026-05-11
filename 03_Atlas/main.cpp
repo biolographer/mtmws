@@ -96,10 +96,12 @@ public:
             held_y = base_y + cv_mod_y;
 
             constexpr int32_t MAP_MAX = 4096;
-            while (held_x >= MAP_MAX) held_x -= MAP_MAX;
-            while (held_x < 0) held_x += MAP_MAX;
-            while (held_y >= MAP_MAX) held_y -= MAP_MAX;
-            while (held_y < 0) held_y += MAP_MAX;
+            
+            // --- FIX: O(1) Safe Modulo Wrapping ---
+            // This safely wraps any integer (positive or massive negative) 
+            // into the 0-4095 range instantly, preventing processor locks.
+            held_x = (held_x % MAP_MAX + MAP_MAX) % MAP_MAX;
+            held_y = (held_y % MAP_MAX + MAP_MAX) % MAP_MAX;
 
             target_to_play = find_nearest_sample(held_x, held_y);
 
@@ -128,7 +130,13 @@ public:
             // THE RATCHET: A sample has played before, do the normal stutter
             else {
                 ratchet_counter++;
-                uint32_t ratchet_interval = 1000 + ((4095 - secondary_param_ratchet) * 5);
+                
+                // --- FIX: Clamp the ADC value so it cannot exceed 4095 and underflow ---
+                int32_t safe_ratchet = secondary_param_ratchet;
+                if (safe_ratchet > 4095) safe_ratchet = 4095;
+                if (safe_ratchet < 0) safe_ratchet = 0;
+                
+                uint32_t ratchet_interval = 1000 + ((4095 - safe_ratchet) * 5);
 
                 if (ratchet_counter >= ratchet_interval) {
                     target_to_play = last_played_target;
