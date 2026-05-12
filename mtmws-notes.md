@@ -145,3 +145,9 @@
     - envelope was configured wrongly
 ---
 
+## Envelope VCA
+- 4ms EnvVCA 
+- Erica Synths Pico Modulator
+- Doepfer A-142-2 Dual Envelope Controlled VCA
+- Intellijel Tangrams
+- After Later Audio QARV
