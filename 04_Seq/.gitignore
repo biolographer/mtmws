@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.o
+*.elf
+*.bin
+*.hex
+*.dis
+*.map
+
+# Editor / IDE
+.vscode/
+.cache/
+.idea/
+*.swp
+.DS_Store
+
+# Raw sample sources (often large and/or licensed) — the bake script
+# reads from here and produces samples.h. Track samples.h, not the WAVs.
+samples_src/raw/
+
+# UF2 — uncomment if you decide NOT to commit the binary
+# *.uf2
