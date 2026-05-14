@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+# =============================================================================
+# Seq — sample baker
+#
+# Reads a folder of .wav files and produces samples.h: a header with one
+# const int16_t array per sample, plus a SampleData lookup table and an
+# enum of human-readable names.
+#
+# Output format:
+#   - Mono
+#   - 22.05 kHz (matches firmware playback rate; resampled to 48 kHz on the
+#     fly via a fractional phase accumulator in voice.h)
+#   - Signed 12-bit values stored in int16_t cells.
+#     Range: -2047 .. +2047. This is what AudioOut1/2() expects natively,
+#     so playback code can write samples directly with no shift or scale.
+#     We keep the int16_t cell size (rather than int8_t) because 8-bit
+#     drum samples sound noticeably crunchy; flash is plentiful (16 MB).
+#
+# Workflow:
+#   python3 tools/bake_samples.py samples_src/m1
+#   # → writes ./samples.h (next to main.cpp)
+# =============================================================================
+
+import os
+import glob
+import argparse
+import librosa
+import numpy as np
+
+# Signed 12-bit symmetric peak. We use ±2047 (not ±2048) so positive and
+# negative peaks scale identically — avoids a 1-LSB DC offset on hot samples.
+INT12_PEAK = 2047
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bake .wav files into a samples.h header for Seq."
+    )
+    parser.add_argument("folder", help="Path to the folder containing .wav samples")
+    parser.add_argument("--sr", type=int, default=22050,
+                        help="Target sample rate in Hz (default 22050)")
+    parser.add_argument("-o", "--output", default="samples.h",
+                        help="Output header path (default ./samples.h)")
+    parser.add_argument("--trim-db", type=float, default=40.0,
+                        help="librosa.effects.trim top_db threshold (default 40)")
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.folder):
+        print(f"Error: folder '{args.folder}' not found.")
+        return
+
+    wav_files = sorted(glob.glob(os.path.join(args.folder, "*.[wW][aA][vV]")))
+    if not wav_files:
+        print(f"Error: no .wav files found in '{args.folder}'.")
+        return
+
+    print(f"Found {len(wav_files)} WAV files. "
+          f"Baking to {args.output} at {args.sr} Hz, 12-bit signed...")
+
+    enum_entries = []      # one line per accepted sample
+    bank_entries = []      # one line per accepted sample
+    array_blocks = []      # the const int16_t arrays themselves
+    total_samples = 0
+
+    for path in wav_files:
+        basename = os.path.splitext(os.path.basename(path))[0]
+        safe_name = "".join(c if c.isalnum() else "_" for c in basename).upper()
+
+        # Load mono at target sample rate
+        y, _ = librosa.load(path, sr=args.sr, mono=True)
+
+        # Trim leading/trailing silence
+        y, _ = librosa.effects.trim(y, top_db=args.trim_db)
+
+        if len(y) == 0:
+            print(f"  skipped (silent after trim): {basename}")
+            continue
+
+        # Normalize to full scale, with epsilon to avoid div-by-zero
+        peak = float(np.max(np.abs(y)))
+        if peak < 1e-9:
+            print(f"  skipped (peak ≈ 0): {basename}")
+            continue
+        y = y / peak
+
+        # Convert directly to signed 12-bit stored in int16_t.
+        # No runtime scaling needed — this matches AudioOut1/2 native range.
+        int_audio = np.int16(np.clip(y, -1.0, 1.0) * INT12_PEAK)
+
+        # Bank index = position in bank_entries (NOT loop counter — we may
+        # have skipped silent files above, and the indices must stay dense).
+        idx = len(bank_entries)
+        array_name = f"sample_{idx:03d}_data"
+
+        # Pretty-print 16 values per line so the header diffs cleanly.
+        values = list(map(str, int_audio))
+        lines = [
+            "    " + ", ".join(values[i:i + 16])
+            for i in range(0, len(values), 16)
+        ]
+        array_block = (
+            f"// {basename} — {len(int_audio)} samples "
+            f"({len(int_audio) / args.sr:.3f} s)\n"
+            f"const int16_t {array_name}[] = {{\n"
+            + ",\n".join(lines)
+            + "\n};\n"
+        )
+        array_blocks.append(array_block)
+
+        enum_entries.append(f"    SAMPLE_{safe_name} = {idx}")
+        bank_entries.append(f"    {{ {array_name}, {len(int_audio)} }}")
+        total_samples += len(int_audio)
+
+        print(f"  [{idx:3d}] {basename:32s}  {len(int_audio):6d} samples")
+
+    if not bank_entries:
+        print("Error: no usable samples produced. Aborting.")
+        return
+
+    # ------------------------------------------------------------------
+    # Emit header
+    # ------------------------------------------------------------------
+    with open(args.output, "w") as f:
+        f.write(
+            "// =============================================================\n"
+            "// AUTOGENERATED by tools/bake_samples.py — do not edit by hand.\n"
+            f"// Source folder : {args.folder}\n"
+            f"// Sample rate   : {args.sr} Hz, mono\n"
+            f"// Storage       : signed 12-bit in int16_t (range -2047..+2047)\n"
+            f"// Total samples : {len(bank_entries)} files, "
+            f"{total_samples} PCM samples "
+            f"(~{total_samples * 2 / 1024:.1f} KiB of flash)\n"
+            "// =============================================================\n\n"
+            "#pragma once\n"
+            "#include <stdint.h>\n\n"
+        )
+
+        for block in array_blocks:
+            f.write(block + "\n")
+
+        f.write("// Convenient names mirroring source filenames.\n")
+        f.write("enum SampleIndex {\n")
+        f.write(",\n".join(enum_entries))
+        f.write("\n};\n\n")
+
+        f.write("struct SampleData {\n")
+        f.write("    const int16_t* data;\n")
+        f.write("    uint32_t       length;\n")
+        f.write("};\n\n")
+
+        f.write("constexpr int NUM_SAMPLES = " + str(len(bank_entries)) + ";\n")
+        f.write("const SampleData drum_bank[NUM_SAMPLES] = {\n")
+        f.write(",\n".join(bank_entries))
+        f.write("\n};\n")
+
+    print(f"\nWrote {args.output}: "
+          f"{len(bank_entries)} samples, "
+          f"{total_samples * 2 / 1024:.1f} KiB of PCM data.")
+
+
+if __name__ == "__main__":
+    main()
