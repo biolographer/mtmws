@@ -1,22 +1,27 @@
 // =============================================================================
 // Seq — Music Thing Workshop System drum machine
 // File: main.cpp
-// Milestone: M1 — first sample plays on Pulse In 1
+// Milestone: M3 — Sequencer + external clock + queued length + reset
 //
-// What this does in M1:
-//   - On every rising edge of Pulse In 1, retriggers a single voice that
-//     plays drum_bank[0] from samples.h.
-//   - Audio Out 1 and 2 carry the same mono signal.
-//   - CV / pulse / LED / knob behaviour from M0 is preserved as a sanity
-//     fallback so we can still see "is the card alive?" at a glance.
+// What this does in M3:
+//   - Three Sequencer instances (one per track), three Voice instances.
+//   - Clock auto-detects Pulse In 1: external mode while it's patched and
+//     edges are arriving; internal mode (fixed 120 BPM) otherwise.
+//   - Pulse In 2 = reset all tracks to step 0 immediately.
+//   - Pattern data (hits bitmask) is hardcoded at construction to the M2
+//     4-on-the-floor values. M5 will populate from Euclidean parameters
+//     instead — same data shape, different writer.
+//   - Pulse Out 1 = downbeat (low-track step 0 firing).
+//   - Switch Up still mutes the mix.
 //
-// Sample format reminder:
-//   samples.h stores signed 12-bit values in int16_t cells (-2047..+2047).
-//   That matches AudioOut1/2's native range exactly, so playback writes
-//   samples directly with no shift, no scale.
+// Diagnostic LED layout for M3 (M4's UI will replace this):
+//   Left column:  0 = external-clock-active (steady)
+//                 2 = clock tick (flash, ~10 ms)
+//                 4 = reset received (flash, ~10 ms)
+//   Right column: 1/3/5 = per-track trigger flash (~50 ms)
 //
-// CPU budget for M1: trivially under 1 µs per audio frame. We're at ~5%
-// of one core. M2 (3 voices) and M6 (humanizer on core 1) will both fit.
+// CPU: 3 voice processes + 3 sequencer ticks every ~125 ms + clock state
+// machine. Comfortably under 5% of one core at 144 MHz.
 // =============================================================================
 
 #include "ComputerCard.h"
@@ -24,84 +29,134 @@
 #include "hardware/clocks.h"
 
 #include "samples.h"
+#include "voice.h"
+#include "sequencer.h"
+#include "clock.h"
 
 class Seq : public ComputerCard
 {
 private:
-    // Fractional playhead, measured in source-sample units (i.e. at 22.05 kHz).
-    // -1.0f means "voice idle." This signed-flag-in-the-value trick costs
-    // one float compare per audio frame and avoids carrying a separate bool.
-    float playhead = -1.0f;
+    static constexpr int NUM_TRACKS = 3;
 
-    // Phase increment per 48 kHz output frame:
-    //   advance the source-rate playhead by (source_sr / output_sr) per frame.
-    // Stored as constexpr so the compiler folds it; no FP divide at runtime.
-    static constexpr float phase_inc = 22050.0f / 48000.0f;
+    Voice     voices[NUM_TRACKS];
+    Sequencer seq   [NUM_TRACKS];
+    Clock     clock;
 
-    // Which sample in drum_bank[] this voice is currently playing.
-    uint8_t sample_index = 0;
+    // ----- LED / pulse-out hold counters ---------------------------------
+    // We hold visual / pulse states active for N frames after the triggering
+    // event, then let them decay. All values are in 48 kHz audio frames.
+    static constexpr uint32_t TRIGGER_LED_FRAMES = 2400;   // ~50 ms
+    static constexpr uint32_t CLOCK_LED_FRAMES   = 480;    // ~10 ms
+    static constexpr uint32_t PULSE_OUT_FRAMES   = 480;    // ~10 ms
+
+    uint32_t led_hold      [NUM_TRACKS] = { 0, 0, 0 };
+    uint32_t clock_tick_led             = 0;
+    uint32_t reset_led                  = 0;
+    uint32_t pulse_out1_hold            = 0;
 
 public:
+    Seq()
+    {
+        // ----- M3 hardcoded patterns -------------------------------------
+        // hits bitmask: bit n = step n triggers a hit.
+        // M2 had:  kick 0x1111, snare 0x1010, hat 0xFFFF.
+        // M5 will recompute these from euc_hits / euc_rotation per track.
+        seq[0].track.hits = 0x1111;   // kick  on 0, 4, 8, 12
+        seq[1].track.hits = 0x1010;   // snare on 4, 12
+        seq[2].track.hits = 0xFFFF;   // hat   on every step
+
+        // Track → sample index mapping. M4 will move this under a knob.
+        seq[0].track.base_sample = 0;  // Low
+        seq[1].track.base_sample = 1;  // Mid
+        seq[2].track.base_sample = 2;  // High
+
+        // All tracks start at the default length 16 (set in Track's
+        // member initialisers). Polymetric configurations will be exercised
+        // in M4 when the UI can change them.
+    }
+
     virtual void ProcessSample() override
     {
-        // ----- Trigger ------------------------------------------------------
-        // Rising edge of Pulse In 1 retriggers the voice from the start.
-        // We hard-code drum_bank[0] for M1 — the bank index becomes a
-        // per-track parameter starting in M2.
-        if (PulseIn1RisingEdge() && NUM_SAMPLES > 0) {
-            sample_index = 0;
-            playhead = 0.0f;
+        // ----- 1. Sample inputs (cheap, do once) -------------------------
+        const bool p1_edge = PulseIn1RisingEdge();
+        const bool p2_edge = PulseIn2RisingEdge();
+        const bool p1_conn = Connected(Input::Pulse1);
+
+        // ----- 2. Clock ---------------------------------------------------
+        const bool step_now = clock.Tick(p1_edge, p1_conn);
+
+        // ----- 3. Reset has priority over the step that may also fire ----
+        // If a reset edge and a clock edge land on the same frame, we
+        // first jump every track to step 0, then let the clock fire step 0.
+        // That matches the natural "reset then play downbeat" pattern users
+        // expect when feeding Seq from a master clock + reset pair.
+        if (p2_edge) {
+            for (int t = 0; t < NUM_TRACKS; ++t) seq[t].Reset();
+            reset_led = CLOCK_LED_FRAMES;
         }
 
-        // ----- Voice playback ----------------------------------------------
-        // Output is signed 12-bit, exactly what AudioOut wants.
-        int16_t voice_out = 0;
-        if (playhead >= 0.0f) {
-            const SampleData& s = drum_bank[sample_index];
-            uint32_t i = (uint32_t)playhead;
-            if (i < s.length) {
-                voice_out = s.data[i];     // already 12-bit, no shift needed
-                playhead += phase_inc;
-            } else {
-                playhead = -1.0f;          // ran past end → voice idle
+        // ----- 4. Step boundary: advance all sequencers ------------------
+        if (step_now) {
+            clock_tick_led = CLOCK_LED_FRAMES;
+            for (int t = 0; t < NUM_TRACKS; ++t) {
+                const StepEvent e = seq[t].Tick();
+                if (e.hit) {
+                    voices[t].Trigger(seq[t].track.base_sample);
+                    led_hold[t] = TRIGGER_LED_FRAMES;
+                }
+                // Downbeat clock-out: low track fires step 0.
+                if (t == 0 && e.step == 0 && e.hit) {
+                    pulse_out1_hold = PULSE_OUT_FRAMES;
+                }
             }
         }
 
-        // ----- Audio out: same mono voice on both channels -----------------
-        AudioOut1(voice_out);
-        AudioOut2(voice_out);
+        // ----- 5. Voice mix ----------------------------------------------
+        int32_t mix = 0;
+        for (int t = 0; t < NUM_TRACKS; ++t) {
+            mix += voices[t].Process();
+        }
+        mix >>= 2;   // headroom; proper soft-clip in M7
 
-        // ----- CV passthrough (sanity, M0 carryover) -----------------------
-        CVOut1(CVIn1());
+        if (SwitchVal() == Switch::Up) mix = 0;   // mute
+
+        // ----- 6. Outputs -------------------------------------------------
+        AudioOut1(mix);
+        AudioOut2(mix);
+
+        CVOut1(CVIn1());   // unused-but-passthrough, removed in M4
         CVOut2(CVIn2());
 
-        // ----- Pulse passthrough (lets us see the trigger on Pulse Out 1) --
-        PulseOut1(PulseIn1());
-        PulseOut2(PulseIn2());
+        PulseOut1(pulse_out1_hold > 0);
+        PulseOut2(false);  // M9 wires the accent output here
 
-        // ----- LED feedback ------------------------------------------------
-        // Top-left LED = "voice playing" (visual confirmation per hit).
-        // Other left-column LEDs still show switch position from M0.
-        Switch s = SwitchVal();
-        LedOn(0, playhead >= 0.0f);
-        LedOn(2, s == Switch::Middle);
-        LedOn(4, s == Switch::Down);
+        // ----- 7. Decay hold counters ------------------------------------
+        if (pulse_out1_hold > 0) --pulse_out1_hold;
+        if (clock_tick_led  > 0) --clock_tick_led;
+        if (reset_led       > 0) --reset_led;
+        for (int t = 0; t < NUM_TRACKS; ++t) {
+            if (led_hold[t] > 0) --led_hold[t];
+        }
 
-        LedBrightness(1, KnobVal(Knob::Main));
-        LedBrightness(3, KnobVal(Knob::X));
-        LedBrightness(5, KnobVal(Knob::Y));
+        // ----- 8. LEDs ----------------------------------------------------
+        // Left column: clock diagnostics.
+        LedOn(0, clock.IsExternal());
+        LedOn(2, clock_tick_led > 0);
+        LedOn(4, reset_led      > 0);
+
+        // Right column: per-track trigger flashes.
+        LedOn(1, led_hold[0] > 0);   // Low
+        LedOn(3, led_hold[1] > 0);   // Mid
+        LedOn(5, led_hold[2] > 0);   // High
     }
 };
 
 int main()
 {
-    // Run at 144 MHz to push ADC harmonics out of the audio band.
-    // Must precede ComputerCard construction (peripheral baud/clkdivs are
-    // computed from the current sysclk).
     set_sys_clock_khz(144000, true);
 
     Seq card;
-    card.EnableNormalisationProbe();
+    card.EnableNormalisationProbe();  // required for Connected() to work
     card.Run();
     return 0;
 }
