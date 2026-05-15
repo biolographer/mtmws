@@ -57,21 +57,21 @@ public:
     };
     static constexpr int LENGTH_TABLE_SIZE = 12;
 
-    void Update(Switch sw,
+    void Update(ComputerCard::Switch sw,
                 int16_t knob_main, int16_t knob_x, int16_t knob_y,
                 Track* tracks[NUM_TRACKS])
     {
         // ----- Down-edge detection (momentary page cycle) ----------------
-        const bool down_edge = (sw == Switch::Down)
-                            && (prev_switch != Switch::Down);
+        const bool down_edge = (sw == ComputerCard::Switch::Down)
+                             && (prev_switch != ComputerCard::Switch::Down);
         prev_switch = sw;
 
         // ----- Mode resolution -------------------------------------------
         // Down does NOT change mode; it's a momentary action only. Up and
         // Middle are the two stable modes.
         const Mode prev_mode = mode;
-        if      (sw == Switch::Up)     mode = PERFORM;
-        else if (sw == Switch::Middle) mode = EDIT;
+        if      (sw == ComputerCard::Switch::Up)     mode = PERFORM;
+        else if (sw == ComputerCard::Switch::Middle) mode = EDIT;
         // else (Down): leave mode unchanged
 
         // ----- Page cycle on Down edge -----------------------------------
@@ -116,7 +116,7 @@ public:
 private:
     Mode   mode = PERFORM;
     Page   page = PAGE_SAMPLE;
-    Switch prev_switch = Switch::Middle;
+    ComputerCard::Switch prev_switch = ComputerCard::Switch::Middle;
 
     SoftTakeover catches[NUM_TRACKS][NUM_PAGES];
 
