@@ -31,7 +31,7 @@
 // Increased from 64 to 512 to handle the high-speed telemetry packets
 // without stalling Core 1 if the PC host operating system lags slightly.
 #define CFG_TUD_CDC_RX_BUFSIZE    256
-#define CFG_TUD_CDC_TX_BUFSIZE    512 
+#define CFG_TUD_CDC_TX_BUFSIZE    1024 
 
 #ifdef __cplusplus
  }
