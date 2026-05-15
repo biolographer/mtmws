@@ -99,7 +99,7 @@ function processIncomingChunk(chunk) {
 function parseTelemetryFrame(decodedBytes) {
     // 524 is the expected byte size of TelemetryFrame without struct padding issues.
     // Ensure this matches your specific C++ compiler's struct size output.
-    if (decodedBytes.length < 520) return; 
+    if (decodedBytes.length < 524) return; 
 
     const view = new DataView(decodedBytes.buffer);
     const syncWord = view.getUint16(0, true);
@@ -110,10 +110,10 @@ function parseTelemetryFrame(decodedBytes) {
     
     for (let i = 0; i < sampleCount; i++) {
         // Normalize 12-bit ADC (0-4095) to -1.0 to 1.0 float space
-        const a1 = (view.getUint16(offset, true) / 2047.5) - 1.0; offset += 2;
-        const a2 = (view.getUint16(offset, true) / 2047.5) - 1.0; offset += 2;
-        const c1 = (view.getUint16(offset, true) / 2047.5) - 1.0; offset += 2;
-        const c2 = (view.getUint16(offset, true) / 2047.5) - 1.0; offset += 2;
+        const a1 = view.getInt16(offset, true) / 2048.0; offset += 2;
+        const a2 = view.getInt16(offset, true) / 2048.0; offset += 2;
+        const c1 = view.getInt16(offset, true) / 2048.0; offset += 2;
+        const c2 = view.getInt16(offset, true) / 2048.0; offset += 2;
         
         pushToRollingBuffer(traceAudio1, a1);
         pushToRollingBuffer(traceAudio2, a2);
