@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTMWS Oscilloscope</title>
+    <style>
+        body { background-color: #050505; color: #fff; font-family: monospace; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        canvas { background-color: #0a0a0a; border: 2px solid #333; border-radius: 4px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .controls { margin-bottom: 20px; display: flex; gap: 15px; align-items: center; }
+        button { padding: 10px 20px; background: #333; color: white; border: 1px solid #555; cursor: pointer; font-family: monospace; transition: 0.2s; }
+        button:hover { background: #444; }
+        #connection-status { color: #888; }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="connectToWorkshopComputer()">Connect Hardware</button>
+        <span id="connection-status">Disconnected</span>
+    </div>
+    <canvas id="oscilloscope-display" width="1024" height="600"></canvas>
+    <script src="app.js"></script>
+</body>
+</html>
