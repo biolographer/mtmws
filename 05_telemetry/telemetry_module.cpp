@@ -1,4 +1,5 @@
 #include "ComputerCard.h"
+#include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/timer.h"
 #include "tusb.h"
@@ -103,11 +104,11 @@ protected:
         if (decimationCounter >= DECIMATION_FACTOR) {
             decimationCounter = 0;
             
-            // Populate arrays. (Assuming GetAdcRaw fetches post-compensated values)
-            currentFrame.audio1[sampleIndex] = GetAdcRaw(Input::Audio1);
-            currentFrame.audio2[sampleIndex] = GetAdcRaw(Input::Audio2);
-            currentFrame.cv1[sampleIndex]    = GetAdcRaw(Input::CV1);
-            currentFrame.cv2[sampleIndex]    = GetAdcRaw(Input::CV2);
+            // Populate arrays using the specific ComputerCard API functions
+            currentFrame.audio1[sampleIndex] = AudioIn1();
+            currentFrame.audio2[sampleIndex] = AudioIn2();
+            currentFrame.cv1[sampleIndex]    = CVIn1();
+            currentFrame.cv2[sampleIndex]    = CVIn2();
             
             sampleIndex++;
             
@@ -131,39 +132,30 @@ TelemetryModule* moduleInstance;
 // --- USB Transmission Thread (Core 1) ---
 
 void core1_usb_thread() {
-    // We must initialize the USB device stack on this core if stdio isn't doing it
-    tusb_init(); 
+    // REMOVE tusb_init(); - The SDK handles this now
     
     TelemetryFrame outFrame;
     uint8_t cobsBuffer[sizeof(TelemetryFrame) + 5]; 
     
     while (true) {
-        // Must call tud_task() regularly to handle USB events/interrupts
+        // tud_task() is still required to process the USB stack
         tud_task(); 
         
-        // ONLY pop and encode if the computer is actually connected and ready
         if (tud_cdc_connected()) {
             if (telemetryQueue.pop(outFrame)) {
-                
-                // 1. Encode frame
                 size_t encodedLength = CobsEncode((uint8_t*)&outFrame, sizeof(TelemetryFrame), cobsBuffer);
-                cobsBuffer[encodedLength] = 0x00; // Append boundary
+                cobsBuffer[encodedLength] = 0x00; 
                 
-                // 2. Check if TinyUSB has enough room in its FIFO to accept the data
-                //    This prevents blocking if the host OS is temporarily lagging
                 if (tud_cdc_write_available() >= (encodedLength + 1)) {
                     tud_cdc_write(cobsBuffer, encodedLength + 1);
-                    tud_cdc_write_flush(); // Force TinyUSB to send the packet immediately
+                    tud_cdc_write_flush(); 
                 }
             }
         } else {
-            // If not connected, we still need to drain the queue so it doesn't 
-            // back up and cause memory pressure on Core 0.
-            while (telemetryQueue.pop(outFrame)) { 
-                // Discard data silently
-            }
+            while (telemetryQueue.pop(outFrame)); // Drain queue
         }
         
+        // Minor sleep to yield
         sleep_us(100); 
     }
 }

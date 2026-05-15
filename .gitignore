@@ -82,3 +82,6 @@ test
 corpus_data.h
 !04_Seq/samples.h
 04_Seq/samples/*
+
+*/build/*
+!*/build/*.uf2
