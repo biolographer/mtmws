@@ -131,23 +131,40 @@ TelemetryModule* moduleInstance;
 // --- USB Transmission Thread (Core 1) ---
 
 void core1_usb_thread() {
+    // We must initialize the USB device stack on this core if stdio isn't doing it
+    tusb_init(); 
+    
     TelemetryFrame outFrame;
-    // Buffer sized for structure + COBS overhead (approx 1 byte per 254 bytes) + delimiter
     uint8_t cobsBuffer[sizeof(TelemetryFrame) + 5]; 
     
     while (true) {
-        if (telemetryQueue.pop(outFrame)) {
-            // Encode outFrame struct into cobsBuffer, eliminating all 0x00 bytes
-            size_t encodedLength = CobsEncode((uint8_t*)&outFrame, sizeof(TelemetryFrame), cobsBuffer);
-            
-            // Append definitive boundary marker
-            cobsBuffer[encodedLength] = 0x00; 
-            
-            // Transmit encoded buffer over USB CDC
-            fwrite(cobsBuffer, 1, encodedLength + 1, stdout);
-            fflush(stdout);
+        // Must call tud_task() regularly to handle USB events/interrupts
+        tud_task(); 
+        
+        // ONLY pop and encode if the computer is actually connected and ready
+        if (tud_cdc_connected()) {
+            if (telemetryQueue.pop(outFrame)) {
+                
+                // 1. Encode frame
+                size_t encodedLength = CobsEncode((uint8_t*)&outFrame, sizeof(TelemetryFrame), cobsBuffer);
+                cobsBuffer[encodedLength] = 0x00; // Append boundary
+                
+                // 2. Check if TinyUSB has enough room in its FIFO to accept the data
+                //    This prevents blocking if the host OS is temporarily lagging
+                if (tud_cdc_write_available() >= (encodedLength + 1)) {
+                    tud_cdc_write(cobsBuffer, encodedLength + 1);
+                    tud_cdc_write_flush(); // Force TinyUSB to send the packet immediately
+                }
+            }
+        } else {
+            // If not connected, we still need to drain the queue so it doesn't 
+            // back up and cause memory pressure on Core 0.
+            while (telemetryQueue.pop(outFrame)) { 
+                // Discard data silently
+            }
         }
-        sleep_us(100); // Yield to prevent Core 1 from starving the memory bus
+        
+        sleep_us(100); 
     }
 }
 
