@@ -198,20 +198,13 @@ TelemetryModule* moduleInstance;
 // USB events and drains the telemetry queue to the host.
 
 void core1_usb_thread() {
-    // Bring up TinyUSB. board_init() configures the USB clock and any
-    // board-level bits TinyUSB needs; tusb_init() starts the device stack
-    // using the descriptors in usb_descriptors.c.
     board_init();
     tusb_init();
 
     TelemetryFrame outFrame;
-    // +5 worst-case overhead: 1 COBS overhead byte per 254 + framing zero.
     uint8_t cobsBuffer[sizeof(TelemetryFrame) + 5];
 
     while (true) {
-        // tud_task() drives the USB state machine. Must be called often.
-        // Do NOT sleep meaningfully on this core — sleeps here translate
-        // directly into USB latency and risk control-transfer timeouts.
         tud_task();
 
         if (tud_cdc_connected()) {
@@ -221,21 +214,32 @@ void core1_usb_thread() {
                     sizeof(TelemetryFrame),
                     cobsBuffer);
 
-                // Append the 0x00 frame delimiter.
-                cobsBuffer[encodedLength] = 0x00;
-                const uint32_t totalLength = encodedLength + 1;
+                cobsBuffer[encodedLength] = 0x00;        // frame delimiter
+                const size_t totalLength = encodedLength + 1;
 
-                // Only write if the whole packet fits in the FIFO — partial
-                // writes would corrupt the COBS framing on the host side.
-                if (tud_cdc_write_available() >= totalLength) {
-                    tud_cdc_write(cobsBuffer, totalLength);
-                    tud_cdc_write_flush();
+                // The encoded frame (~525 bytes) is larger than the CDC TX FIFO
+                // (CFG_TUD_CDC_TX_BUFSIZE = 512). We must stream it out in
+                // pieces, draining the FIFO between writes by servicing
+                // tud_task() and flushing. The previous "all-or-nothing"
+                // check meant we never wrote anything — that was the bug
+                // hiding all telemetry.
+                size_t written = 0;
+                while (written < totalLength) {
+                    uint32_t avail = tud_cdc_write_available();
+                    if (avail == 0) {
+                        // FIFO full — let the host drain it.
+                        tud_cdc_write_flush();
+                        tud_task();
+                        continue;
+                    }
+                    size_t remaining = totalLength - written;
+                    size_t chunk = (avail < remaining) ? avail : remaining;
+                    written += tud_cdc_write(cobsBuffer + written, chunk);
                 }
-                // Else: drop this frame. Host will resync on the next 0x00.
+                tud_cdc_write_flush();
             }
         } else {
-            // No host connected — drain the queue so we don't build up
-            // stale data that would all flush at once on reconnect.
+            // No host — drain the queue so reconnect is clean.
             while (telemetryQueue.pop(outFrame)) { /* discard */ }
         }
     }
