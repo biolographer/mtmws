@@ -544,47 +544,49 @@ public:
     bool pulse2_is_gpio = false;
     // (Moved to top)
 
-
-    void WritePhysicalOut(int ch, int16_t val) {
+    void WritePhysicalOut(int ch, int16_t val, bool isAudio = false) {
         switch(ch) {
-            case 0: AudioOut1(val >> 4); break; // Audio 1
+            case 0: AudioOut1(val >> 4); break; // Audio 1 (16-bit -> 12-bit)
             case 1: AudioOut2(val >> 4); break; // Audio 2
-            case 2: CVOut1(val); break; // CV 1
-            case 3: CVOut2(val); break; // CV 2
+            
+            // FIX: Use precise 19-bit CV output for high-quality audio. 
+            // Shifting a 16-bit value left by 3 perfectly maps it to the 19-bit API (-262144 to 262143).
+            case 2: CVOut1Precise((int32_t)val << 3); break; // CV 1
+            case 3: CVOut2Precise((int32_t)val << 3); break; // CV 2
+            
             case 4: // Pulse 1
-                if (config.pulseOutBinary[0]) {
-                     // Binary Mode: Switch to GPIO and set HIGH/LOW
+                // FIX: If we are outputting an audio stream, bypass Binary mode and force PWM.
+                if (isAudio || !config.pulseOutBinary[0]) {
+                     if (pulse1_is_gpio) {
+                         gpio_set_function(8, GPIO_FUNC_PWM);
+                         pulse1_is_gpio = false;
+                     }
+                     // Maps signed 16-bit audio to 10-bit unipolar PWM (~2.5V center)
+                     pwm_set_gpio_level(8, 1023 - ((val + 32768) >> 6));
+                } else {
                      if (!pulse1_is_gpio) {
                          gpio_set_function(8, GPIO_FUNC_SIO);
                          gpio_set_dir(8, GPIO_OUT);
                          pulse1_is_gpio = true;
                      }
                      gpio_put(8, !(val > 0)); // Inverted: true -> LOW (Jack HIGH)
-                } else {
-                     // PWM Mode: Switch to PWM if currently in GPIO mode
-                     if (pulse1_is_gpio) {
-                         gpio_set_function(8, GPIO_FUNC_PWM);
-                         pulse1_is_gpio = false;
-                     }
-                     pwm_set_gpio_level(8, 1023 - ((val + 32768) >> 6));
                 }
                 break;
+                
             case 5: // Pulse 2
-                if (config.pulseOutBinary[1]) {
-                     // Binary Mode: Switch to GPIO and set HIGH/LOW
-                     if (!pulse2_is_gpio) {
-                         gpio_set_function(9, GPIO_FUNC_SIO);
-                         gpio_set_dir(9, GPIO_OUT);
-                         pulse2_is_gpio = true;
-                     }
-                     gpio_put(9, !(val > 0)); // Inverted: true -> LOW (Jack HIGH)
-                } else {
-                     // PWM Mode: Switch to PWM if currently in GPIO mode
+                if (isAudio || !config.pulseOutBinary[1]) {
                      if (pulse2_is_gpio) {
                          gpio_set_function(9, GPIO_FUNC_PWM);
                          pulse2_is_gpio = false;
                      }
                      pwm_set_gpio_level(9, 1023 - ((val + 32768) >> 6));
+                } else {
+                     if (!pulse2_is_gpio) {
+                         gpio_set_function(9, GPIO_FUNC_SIO);
+                         gpio_set_dir(9, GPIO_OUT);
+                         pulse2_is_gpio = true;
+                     }
+                     gpio_put(9, !(val > 0)); 
                 }
                 break;
         }
@@ -616,7 +618,6 @@ public:
             if (altMode) ProcessAltModeInputs();
         }
 
-        // ===== MIDI RX & STATE UPDATE =====
         // ===== MIDI RX & STATE UPDATE =====
         uint32_t evt;
         int evt_count = 0;
@@ -704,25 +705,32 @@ public:
             bool forceMidi = altMode && (i >= 2) && (config.outMode[i] != 0);
             
             if (usbEnabled && !forceMidi) {
-                // streamData contains normalized 6ch audio (padded with 0s if USB is 2/4ch)
+                // streamData contains normalized 6ch audio
                 if (currentStreamPtr < 6) {
-                    WritePhysicalOut(i, streamData[currentStreamPtr++]);
+                    // Pass true to flag this as an analog audio stream
+                    WritePhysicalOut(i, streamData[currentStreamPtr++], true); 
                 }
             } else {
                 // Mode Fallback
                 int16_t outVal = 0;
                 uint8_t mode = config.outMode[i];
-                if (mode == 1) { // Pitch
-                     outVal = (int16_t)(voices[i].GetPitchMV(0) * 1.0f); // TODO Scale
+                
+                if (mode == 1 && (i == 2 || i == 3)) { // Pitch logic (CV 1 & 2 only)
+                    // Use the built-in, calibrated millivolt output rather than raw DAC writing
+                    int32_t mv = voices[i].GetPitchMV(0);
+                    if (i == 2) CVOut1Millivolts(mv);
+                    if (i == 3) CVOut2Millivolts(mv);
+                    continue; // Skip WritePhysicalOut since we handled it via the API
                 } else if (mode == 3) { // Gate
-                    outVal = voices[i].gateState ? 32767 : 0;
+                    outVal = voices[i].gateState ? 32767 : -32768;
                 } else if (mode == 5) { // Clock
-                    outVal = clockPulseActive[i] ? 32767 : 0;
+                    outVal = clockPulseActive[i] ? 32767 : -32768;
                 } else if (mode == 6) { // Binary
-                    // TODO: Implement Binary mode setting
-                    outVal = voices[i].gateState ? 32767 : 0;
+                    outVal = voices[i].gateState ? 32767 : -32768;
                 }
-                WritePhysicalOut(i, outVal);
+                
+                // Pass false, letting the GPIO/Binary configurations take over if applicable
+                WritePhysicalOut(i, outVal, false);
             }
         }
         
