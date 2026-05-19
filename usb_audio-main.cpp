@@ -1002,31 +1002,35 @@ void audio_task(void)
     // This perfectly synchronizes the RP2040 to the PC's USB clock, preventing stutters.
     if (!tud_audio_tx_ready()) return;
 
+    // --- NEW: Fractional Phase Accumulator & Proportional Feedback ---
     uint32_t count = rb_count(&audioInRB);
     
-    // Adaptive Packet Size logic 
-    uint32_t samples_to_send = 48; // Default for 48k
-
-    if (g_sampleRateIdx == 1) { // 44.1k
-         static uint32_t phase_acc = 0;
-         uint32_t target_mhz = 44100;
-         if (count > 3000) target_mhz = 44150;       
-         else if (count > 2200) target_mhz = 44105;  
-         else if (count < 1000) target_mhz = 44000;  
-         else if (count < 1900) target_mhz = 44095;
-         phase_acc += target_mhz;
-         samples_to_send = phase_acc / 1000;
-         phase_acc %= 1000;
-    } else if (g_sampleRateIdx == 2) { // 24k
-         samples_to_send = 24;
-         if (count > 3000) samples_to_send = 25;
-         else if (count < 1000) samples_to_send = 23;
-    } else { // 48k
-         samples_to_send = 48;
-         if (count > 3000) samples_to_send = 49;
-         else if (count < 1000) samples_to_send = 47;
-    }
+    static uint32_t phase_acc = 0;
+    int32_t target_count = AUDIO_BUFFER_SIZE / 2; // Ideal buffer level (2048)
+    int32_t error = (int32_t)count - target_count; // Positive if filling up, negative if draining
     
+    // Determine nominal frequency based on current settings
+    uint32_t nominal_freq = 48000;
+    if (g_sampleRateIdx == 1) nominal_freq = 44100;
+    else if (g_sampleRateIdx == 2) nominal_freq = 24000;
+    
+    // Calculate a gentle frequency adjustment (Proportional control)
+    // Dividing by 16 creates a soft curve: an error of 160 samples shifts the clock by just 10 Hz.
+    int32_t freq_adj = error / 16; 
+    
+    // Clamp the adjustment to a strictly safe UAC1 range (+/- 100 Hz) to prevent extreme jitter
+    if (freq_adj > 100) freq_adj = 100;
+    if (freq_adj < -100) freq_adj = -100;
+    
+    uint32_t target_freq = nominal_freq + freq_adj;
+    
+    // Accumulate the target frequency. Dividing by 1000 extracts the perfect integer 
+    // number of samples to send for this specific millisecond.
+    phase_acc += target_freq;
+    uint32_t samples_to_send = phase_acc / 1000;
+    phase_acc %= 1000; // Keep the fractional remainder for the next millisecond
+    // -----------------------------------------------------------------
+
     for (uint32_t i = 0; i < samples_to_send; i++) {
         uint32_t val_12, val_34, val_56;
         
@@ -1055,7 +1059,7 @@ void audio_task(void)
                 mic_buf[tx_channels*i+5] = ch6;
             }
         } else {
-            // Buffer underrun
+            // Buffer underrun - feed silence to keep the packet size correct
             for(int j=0; j<tx_channels; j++) mic_buf[tx_channels*i+j] = 0;
         }
     }
