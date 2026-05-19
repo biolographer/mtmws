@@ -944,17 +944,12 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
 }
 
 //--------------------------------------------------------------------+
-// USB Audio Task (Core 0) - runs every 1ms
+// USB Audio Task (Core 0) - uses tiny_usb to sync with host
 //--------------------------------------------------------------------+
 static int16_t mic_buf[600];  // Buffer for 6-channel mic data to send
 
 void audio_task(void)
 {
-    static uint32_t start_ms = 0;
-    uint32_t curr_ms = board_millis();
-    if (start_ms == curr_ms) return;  // Run once per ms
-    start_ms = curr_ms;
-    
     // Determine RX (Spk) and TX (Mic) channel counts based on Config
     uint8_t rx_channels = g_channelsOut; // Explicitly configured
     uint8_t tx_channels = g_channelsIn;  // Explicitly configured
@@ -966,7 +961,8 @@ void audio_task(void)
     uint8_t rx_bytes_per_sample = rx_channels * 2;
     uint8_t tx_bytes_per_sample = tx_channels * 2;
     
-    // ===== SPEAKER RX (USB -> DAC) =====
+    // ===== 1. SPEAKER RX (USB -> DAC) =====
+    // This runs freely to drain the host buffer as fast as TinyUSB receives data
     // Format: [Ch1 Ch2 ...] per sample, each 16-bit
     uint32_t bytes_available = tud_audio_available();
     
@@ -1001,10 +997,14 @@ void audio_task(void)
         }
     }
     
-    // ===== MIC TX (ADC -> USB) =====
+    // ===== 2. MIC TX (ADC -> USB) =====
+    // Only run this when the USB Host is actually ready for a new frame.
+    // This perfectly synchronizes the RP2040 to the PC's USB clock, preventing stutters.
+    if (!tud_audio_tx_ready()) return;
+
     uint32_t count = rb_count(&audioInRB);
     
-    // Adaptive Packet Size logic
+    // Adaptive Packet Size logic 
     uint32_t samples_to_send = 48; // Default for 48k
 
     if (g_sampleRateIdx == 1) { // 44.1k
