@@ -598,8 +598,18 @@ public:
             case 1: return AudioIn2() << 4;
             case 2: return CVIn1() << 4;
             case 3: return CVIn2() << 4;
-            case 4: return PulseIn1() ? 32767 : 0; // Unipolar 0..1
-            case 5: return PulseIn2() ? 32767 : 0; // Unipolar 0..1
+            
+            case 4: // Pulse 1
+                // If set to Audio Mode (0), output a centered bipolar wave to avoid DC offset
+                if (config.inMode[4] == 0) return PulseIn1() ? 32767 : -32768; 
+                // If set to Gate/CV, output a standard unipolar wave (0 to Max)
+                else return PulseIn1() ? 32767 : 0; 
+                
+            case 5: // Pulse 2
+                // Audio Mode
+                if (config.inMode[5] == 0) return PulseIn2() ? 32767 : -32768; 
+                // Gate Mode
+                else return PulseIn2() ? 32767 : 0; 
         }
         return 0;
     }
